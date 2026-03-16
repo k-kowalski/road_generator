@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <windowsx.h>
 #include <wrl/client.h>
 
 #include <d3d12.h>
@@ -8,8 +9,10 @@
 
 #include "HalfEdgeMesh.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -27,12 +30,23 @@ constexpr UINT kWindowHeight = 720;
 constexpr wchar_t kWindowClassName[] = L"DX12ColoredCubeWindow";
 constexpr wchar_t kWindowTitle[] = L"DX12 Colored Cube";
 
+struct OrbitCamera {
+    float yaw = DirectX::XM_PI;
+    float pitch = 0.24f;
+    float distance = 5.2f;
+    DirectX::XMFLOAT3 target = {0.0f, 0.25f, 0.0f};
+};
+
 struct SceneConstants {
     DirectX::XMFLOAT4X4 mvp;
 };
 
 UINT AlignTo(UINT value, UINT alignment) {
     return (value + alignment - 1U) & ~(alignment - 1U);
+}
+
+float ClampFloat(float value, float minValue, float maxValue) {
+    return std::clamp(value, minValue, maxValue);
 }
 
 D3D12_RESOURCE_DESC BufferDesc(UINT64 sizeInBytes) {
@@ -122,9 +136,11 @@ class CubeApp {
 public:
     int Run(HINSTANCE instance, int cmdShow) {
         instance_ = instance;
+        ResetCamera();
         CreateAppWindow(cmdShow);
         InitializeD3D();
         startTime_ = std::chrono::steady_clock::now();
+        previousFrameTime_ = startTime_;
         MainLoop();
         Cleanup();
         return 0;
@@ -135,9 +151,63 @@ private:
         SetWindowTextW(hwnd_, showWireframe_ ? L"DX12 Colored Cube [Wireframe]" : kWindowTitle);
     }
 
+    void ResetCamera() {
+        camera_ = OrbitCamera{};
+    }
+
     void ToggleWireframe() {
         showWireframe_ = !showWireframe_;
         UpdateWindowTitle();
+    }
+
+    DirectX::XMMATRIX CameraViewMatrix() const {
+        const float cosPitch = std::cos(camera_.pitch);
+        const float sinPitch = std::sin(camera_.pitch);
+        const float cosYaw = std::cos(camera_.yaw);
+        const float sinYaw = std::sin(camera_.yaw);
+
+        const DirectX::XMFLOAT3 eye = {
+            camera_.target.x + camera_.distance * cosPitch * sinYaw,
+            camera_.target.y + camera_.distance * sinPitch,
+            camera_.target.z + camera_.distance * cosPitch * cosYaw
+        };
+
+        return DirectX::XMMatrixLookAtLH(
+            DirectX::XMVectorSet(eye.x, eye.y, eye.z, 1.0f),
+            DirectX::XMVectorSet(camera_.target.x, camera_.target.y, camera_.target.z, 1.0f),
+            DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+    }
+
+    void UpdateCamera(float deltaSeconds) {
+        const float panSpeed = std::max(1.5f, camera_.distance * 0.9f);
+        const float cosYaw = std::cos(camera_.yaw);
+        const float sinYaw = std::sin(camera_.yaw);
+
+        float moveX = 0.0f;
+        float moveZ = 0.0f;
+        if (GetAsyncKeyState('W') & 0x8000) {
+            moveX += -sinYaw;
+            moveZ += -cosYaw;
+        }
+        if (GetAsyncKeyState('S') & 0x8000) {
+            moveX -= -sinYaw;
+            moveZ -= -cosYaw;
+        }
+        if (GetAsyncKeyState('D') & 0x8000) {
+            moveX += -cosYaw;
+            moveZ += sinYaw;
+        }
+        if (GetAsyncKeyState('A') & 0x8000) {
+            moveX -= -cosYaw;
+            moveZ -= sinYaw;
+        }
+
+        const float moveLength = std::sqrt(moveX * moveX + moveZ * moveZ);
+        if (moveLength > 0.0f) {
+            const float moveScale = panSpeed * deltaSeconds / moveLength;
+            camera_.target.x += moveX * moveScale;
+            camera_.target.z += moveZ * moveScale;
+        }
     }
 
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -166,7 +236,45 @@ private:
                 ToggleWireframe();
                 return 0;
             }
+            if ((lParam & 0x40000000) == 0 && wParam == VK_HOME) {
+                ResetCamera();
+                return 0;
+            }
             break;
+        case WM_RBUTTONDOWN:
+            orbitingCamera_ = true;
+            lastMouseX_ = GET_X_LPARAM(lParam);
+            lastMouseY_ = GET_Y_LPARAM(lParam);
+            SetCapture(hwnd);
+            return 0;
+        case WM_RBUTTONUP:
+            orbitingCamera_ = false;
+            ReleaseCapture();
+            return 0;
+        case WM_CAPTURECHANGED:
+            orbitingCamera_ = false;
+            return 0;
+        case WM_MOUSEMOVE:
+            if (orbitingCamera_) {
+                const int x = GET_X_LPARAM(lParam);
+                const int y = GET_Y_LPARAM(lParam);
+                const int dx = x - lastMouseX_;
+                const int dy = y - lastMouseY_;
+                lastMouseX_ = x;
+                lastMouseY_ = y;
+
+                camera_.yaw += static_cast<float>(dx) * 0.01f;
+                camera_.pitch += static_cast<float>(dy) * 0.01f;
+                camera_.pitch = ClampFloat(camera_.pitch, -1.35f, 1.35f);
+                return 0;
+            }
+            break;
+        case WM_MOUSEWHEEL: {
+            const short wheelDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+            camera_.distance *= (wheelDelta > 0) ? 0.9f : 1.1f;
+            camera_.distance = ClampFloat(camera_.distance, 2.0f, 20.0f);
+            return 0;
+        }
         case WM_DESTROY:
             running_ = false;
             PostQuitMessage(0);
@@ -693,18 +801,17 @@ private:
     }
 
     void UpdateSceneConstants() {
-        const float timeSeconds = std::chrono::duration<float>(
-            std::chrono::steady_clock::now() - startTime_).count();
+        const auto now = std::chrono::steady_clock::now();
+        const float timeSeconds = std::chrono::duration<float>(now - startTime_).count();
+        const float deltaSeconds = std::chrono::duration<float>(now - previousFrameTime_).count();
+        previousFrameTime_ = now;
 
         editableMesh_.AnimateFaceRegion(animatedFace_, timeSeconds);
         UploadMeshForCurrentFrame();
+        UpdateCamera(deltaSeconds);
 
-        const DirectX::XMMATRIX world =
-            DirectX::XMMatrixRotationRollPitchYaw(timeSeconds * 0.35f, timeSeconds * 0.55f, 0.0f);
-        const DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
-            DirectX::XMVectorSet(0.0f, 1.25f, -5.0f, 1.0f),
-            DirectX::XMVectorZero(),
-            DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+        const DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
+        const DirectX::XMMATRIX view = CameraViewMatrix();
         const DirectX::XMMATRIX projection = DirectX::XMMatrixPerspectiveFovLH(
             DirectX::XMConvertToRadians(60.0f),
             static_cast<float>(width_) / static_cast<float>(height_),
@@ -876,8 +983,13 @@ private:
     std::uint8_t* indexBufferDataBegin_ = nullptr;
     std::uint8_t* constantBufferDataBegin_ = nullptr;
     std::uint32_t animatedFace_ = HalfEdgeMesh::Invalid;
+    OrbitCamera camera_{};
+    bool orbitingCamera_ = false;
     bool showWireframe_ = false;
+    int lastMouseX_ = 0;
+    int lastMouseY_ = 0;
     std::chrono::steady_clock::time_point startTime_;
+    std::chrono::steady_clock::time_point previousFrameTime_;
 };
 
 } // namespace
