@@ -1,6 +1,6 @@
 # DX12 Colored Cube
 
-Minimal Win32 + DirectX 12 app scaffolded as a standalone CMake project. It renders a rotating 3D cube with per-vertex colors.
+Minimal Win32 + DirectX 12 app scaffolded as a standalone CMake project. It now renders a rotating cube-derived mesh backed by a simple in-project half-edge structure, with a small runtime face-extrusion deformation demo.
 
 ## Build
 
@@ -22,3 +22,9 @@ If you edit the HLSL, re-run the CMake configure step before rebuilding:
 ```powershell
 cmake -S . -B build
 ```
+
+## Current demo
+
+- The app starts from a colored cube stored as a half-edge mesh.
+- It performs one simple inset-extrude on the top face.
+- Each frame it uses half-edge face and neighbor traversal to animate that edited region and uploads the updated mesh to the GPU.

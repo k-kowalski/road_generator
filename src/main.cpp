@@ -6,12 +6,15 @@
 
 #include <DirectXMath.h>
 
+#include "HalfEdgeMesh.h"
+
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -23,11 +26,6 @@ constexpr UINT kWindowWidth = 1280;
 constexpr UINT kWindowHeight = 720;
 constexpr wchar_t kWindowClassName[] = L"DX12ColoredCubeWindow";
 constexpr wchar_t kWindowTitle[] = L"DX12 Colored Cube";
-
-struct Vertex {
-    DirectX::XMFLOAT3 position;
-    DirectX::XMFLOAT3 color;
-};
 
 struct SceneConstants {
     DirectX::XMFLOAT4X4 mvp;
@@ -78,6 +76,12 @@ void ThrowIfFailed(HRESULT hr, const char* message) {
     if (FAILED(hr)) {
         FatalError(message, hr);
     }
+}
+
+[[noreturn]] void FatalHalfEdgeError(HalfEdgeMesh::ErrorCode error) {
+    char buffer[32] = {};
+    std::snprintf(buffer, sizeof(buffer), "%u", static_cast<unsigned>(error));
+    FatalError(buffer);
 }
 
 std::wstring GetExecutableDirectory() {
@@ -445,7 +449,7 @@ private:
 
         D3D12_RASTERIZER_DESC rasterizerDesc = {};
         rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
-        rasterizerDesc.CullMode = D3D12_CULL_MODE_BACK;
+        rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
         rasterizerDesc.FrontCounterClockwise = FALSE;
         rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
         rasterizerDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
@@ -503,44 +507,56 @@ private:
     }
 
     void CreateGeometryBuffers() {
-        static constexpr std::array<Vertex, 8> vertices = {{
-            {{-1.0f, -1.0f, -1.0f}, {0.95f, 0.20f, 0.20f}},
-            {{-1.0f,  1.0f, -1.0f}, {0.95f, 0.60f, 0.20f}},
-            {{ 1.0f,  1.0f, -1.0f}, {0.95f, 0.90f, 0.20f}},
-            {{ 1.0f, -1.0f, -1.0f}, {0.20f, 0.80f, 0.30f}},
-            {{-1.0f, -1.0f,  1.0f}, {0.20f, 0.70f, 0.95f}},
-            {{-1.0f,  1.0f,  1.0f}, {0.45f, 0.35f, 0.95f}},
-            {{ 1.0f,  1.0f,  1.0f}, {0.85f, 0.30f, 0.95f}},
-            {{ 1.0f, -1.0f,  1.0f}, {0.95f, 0.35f, 0.65f}},
-        }};
+        HalfEdgeMeshBuildResult buildResult = MakeColoredCubeMesh();
+        if (buildResult.error) {
+            FatalHalfEdgeError(*buildResult.error);
+        }
+        editableMesh_ = std::move(buildResult.mesh);
 
-        static constexpr std::array<std::uint16_t, 36> indices = {{
-            0, 1, 2, 0, 2, 3,
-            4, 6, 5, 4, 7, 6,
-            4, 5, 1, 4, 1, 0,
-            3, 2, 6, 3, 6, 7,
-            1, 5, 6, 1, 6, 2,
-            4, 0, 3, 4, 3, 7,
-        }};
+        const std::uint32_t topFace = editableMesh_.FindBestFace({0.0f, 1.0f, 0.0f});
+        if (topFace == HalfEdgeMesh::Invalid) {
+            FatalError("Failed to locate the cube's top face.");
+        }
 
-        CreateUploadBuffer(vertices.data(), sizeof(vertices), vertexBuffer_, "Failed to create the vertex buffer.");
-        CreateUploadBuffer(indices.data(), sizeof(indices), indexBuffer_, "Failed to create the index buffer.");
+        const HalfEdgeMesh::ExtrusionResult extrusion = editableMesh_.InsetExtrudeFace(topFace, 0.28f, 0.75f);
+        if (extrusion.error) {
+            FatalHalfEdgeError(*extrusion.error);
+        }
 
-        vertexBufferView_.BufferLocation = vertexBuffer_->GetGPUVirtualAddress();
-        vertexBufferView_.StrideInBytes = sizeof(Vertex);
-        vertexBufferView_.SizeInBytes = sizeof(vertices);
+        animatedFace_ = extrusion.topFace;
 
-        indexBufferView_.BufferLocation = indexBuffer_->GetGPUVirtualAddress();
-        indexBufferView_.Format = DXGI_FORMAT_R16_UINT;
-        indexBufferView_.SizeInBytes = sizeof(indices);
+        if (const auto error = editableMesh_.Validate()) {
+            FatalHalfEdgeError(*error);
+        }
 
-        indexCount_ = static_cast<UINT>(indices.size());
+        const std::string meshSummary = editableMesh_.Summary();
+        OutputDebugStringA(meshSummary.c_str());
+
+        editableMesh_.AnimateFaceRegion(animatedFace_, 0.0f);
+        editableMesh_.BuildRenderBuffers(cpuVertices_, cpuIndices_);
+
+        vertexBufferSliceSize_ = AlignTo(static_cast<UINT>(sizeof(RenderVertex) * cpuVertices_.size()), 256);
+        indexBufferSliceSize_ = AlignTo(static_cast<UINT>(sizeof(std::uint16_t) * cpuIndices_.size()), 256);
+
+        CreateMappedUploadBuffer(
+            static_cast<UINT64>(vertexBufferSliceSize_) * kFrameCount,
+            vertexBuffer_,
+            reinterpret_cast<void**>(&vertexBufferDataBegin_),
+            "Failed to create the editable vertex buffer.");
+
+        CreateMappedUploadBuffer(
+            static_cast<UINT64>(indexBufferSliceSize_) * kFrameCount,
+            indexBuffer_,
+            reinterpret_cast<void**>(&indexBufferDataBegin_),
+            "Failed to create the editable index buffer.");
+
+        UploadMeshForCurrentFrame();
     }
 
-    void CreateUploadBuffer(
-        const void* data,
+    void CreateMappedUploadBuffer(
         UINT64 sizeInBytes,
         ComPtr<ID3D12Resource>& buffer,
+        void** mappedData,
         const char* errorMessage) {
         D3D12_HEAP_PROPERTIES heapProps = {};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -556,11 +572,35 @@ private:
                 IID_PPV_ARGS(&buffer)),
             errorMessage);
 
-        void* mappedData = nullptr;
         D3D12_RANGE readRange = {0, 0};
-        ThrowIfFailed(buffer->Map(0, &readRange, &mappedData), "Failed to map an upload buffer.");
-        std::memcpy(mappedData, data, static_cast<size_t>(sizeInBytes));
-        buffer->Unmap(0, nullptr);
+        ThrowIfFailed(buffer->Map(0, &readRange, mappedData), "Failed to map an upload buffer.");
+    }
+
+    void UploadMeshForCurrentFrame() {
+        editableMesh_.BuildRenderBuffers(cpuVertices_, cpuIndices_);
+
+        const UINT vertexBytes = static_cast<UINT>(sizeof(RenderVertex) * cpuVertices_.size());
+        const UINT indexBytes = static_cast<UINT>(sizeof(std::uint16_t) * cpuIndices_.size());
+
+        if (vertexBytes > vertexBufferSliceSize_ || indexBytes > indexBufferSliceSize_) {
+            FatalError("The editable mesh grew beyond the current GPU buffer capacity.");
+        }
+
+        const size_t vertexOffset = static_cast<size_t>(frameIndex_) * vertexBufferSliceSize_;
+        const size_t indexOffset = static_cast<size_t>(frameIndex_) * indexBufferSliceSize_;
+
+        std::memcpy(vertexBufferDataBegin_ + vertexOffset, cpuVertices_.data(), vertexBytes);
+        std::memcpy(indexBufferDataBegin_ + indexOffset, cpuIndices_.data(), indexBytes);
+
+        vertexBufferView_.BufferLocation = vertexBuffer_->GetGPUVirtualAddress() + vertexOffset;
+        vertexBufferView_.StrideInBytes = sizeof(RenderVertex);
+        vertexBufferView_.SizeInBytes = vertexBytes;
+
+        indexBufferView_.BufferLocation = indexBuffer_->GetGPUVirtualAddress() + indexOffset;
+        indexBufferView_.Format = DXGI_FORMAT_R16_UINT;
+        indexBufferView_.SizeInBytes = indexBytes;
+
+        indexCount_ = static_cast<UINT>(cpuIndices_.size());
     }
 
     void CreateConstantBuffer() {
@@ -633,8 +673,11 @@ private:
         const float timeSeconds = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - startTime_).count();
 
+        editableMesh_.AnimateFaceRegion(animatedFace_, timeSeconds);
+        UploadMeshForCurrentFrame();
+
         const DirectX::XMMATRIX world =
-            DirectX::XMMatrixRotationRollPitchYaw(timeSeconds * 0.7f, timeSeconds, 0.0f);
+            DirectX::XMMatrixRotationRollPitchYaw(timeSeconds * 0.35f, timeSeconds * 0.55f, 0.0f);
         const DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
             DirectX::XMVectorSet(0.0f, 1.25f, -5.0f, 1.0f),
             DirectX::XMVectorZero(),
@@ -730,6 +773,16 @@ private:
             WaitForGpu();
         }
 
+        if (vertexBuffer_ != nullptr && vertexBufferDataBegin_ != nullptr) {
+            vertexBuffer_->Unmap(0, nullptr);
+            vertexBufferDataBegin_ = nullptr;
+        }
+
+        if (indexBuffer_ != nullptr && indexBufferDataBegin_ != nullptr) {
+            indexBuffer_->Unmap(0, nullptr);
+            indexBufferDataBegin_ = nullptr;
+        }
+
         if (constantBuffer_ != nullptr && constantBufferDataBegin_ != nullptr) {
             constantBuffer_->Unmap(0, nullptr);
             constantBufferDataBegin_ = nullptr;
@@ -775,6 +828,10 @@ private:
     ComPtr<ID3D12Resource> indexBuffer_;
     ComPtr<ID3D12Resource> constantBuffer_;
 
+    HalfEdgeMesh editableMesh_;
+    std::vector<RenderVertex> cpuVertices_;
+    std::vector<std::uint16_t> cpuIndices_;
+
     D3D12_VIEWPORT viewport_ = {};
     D3D12_RECT scissorRect_ = {};
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView_ = {};
@@ -784,9 +841,14 @@ private:
     UINT frameIndex_ = 0;
     UINT indexCount_ = 0;
     UINT constantBufferStride_ = 0;
+    UINT vertexBufferSliceSize_ = 0;
+    UINT indexBufferSliceSize_ = 0;
     UINT64 fenceValues_[kFrameCount] = {};
     HANDLE fenceEvent_ = nullptr;
+    std::uint8_t* vertexBufferDataBegin_ = nullptr;
+    std::uint8_t* indexBufferDataBegin_ = nullptr;
     std::uint8_t* constantBufferDataBegin_ = nullptr;
+    std::uint32_t animatedFace_ = HalfEdgeMesh::Invalid;
     std::chrono::steady_clock::time_point startTime_;
 };
 
