@@ -409,7 +409,10 @@ HalfEdgeMesh::ExtrusionResult HalfEdgeMesh::InsetExtrudeFace(std::uint32_t faceI
         return result;
     }
 
-    const MeshColor faceColor = polygonFaceColors_[faceIndex];
+    const MeshColor sourceFaceColor = polygonFaceColors_[faceIndex];
+    const MeshColor extrusionAccent = {0.18f, 0.92f, 0.82f};
+    const MeshColor topFaceColor = Lerp(sourceFaceColor, extrusionAccent, 0.75f);
+    const MeshColor sideFaceColor = Lerp(sourceFaceColor, extrusionAccent, 0.45f);
     const MeshPoint center = ComputeFaceCenter(faceIndex);
     const MeshPoint normal = ComputeFaceNormal(faceIndex);
 
@@ -420,11 +423,12 @@ HalfEdgeMesh::ExtrusionResult HalfEdgeMesh::InsetExtrudeFace(std::uint32_t faceI
         const MeshPoint basePosition = vertices_[vertexIndex].bindPosition;
         const MeshPoint insetPosition = Lerp(basePosition, center, inset);
         const MeshPoint extrudedPosition = insetPosition + normal * distance;
-        const MeshColor color = Lerp(vertices_[vertexIndex].color, faceColor, 0.35f);
+        const MeshColor color = Lerp(vertices_[vertexIndex].color, topFaceColor, 0.75f);
         extrudedLoop.push_back(AddVertex(extrudedPosition, color));
     }
 
     polygonFaces_[faceIndex] = extrudedLoop;
+    polygonFaceColors_[faceIndex] = topFaceColor;
 
     for (std::size_t i = 0; i < sourceLoop.size(); ++i) {
         const std::uint32_t a0 = sourceLoop[i];
@@ -433,7 +437,7 @@ HalfEdgeMesh::ExtrusionResult HalfEdgeMesh::InsetExtrudeFace(std::uint32_t faceI
         const std::uint32_t b1 = extrudedLoop[(i + 1) % extrudedLoop.size()];
 
         polygonFaces_.push_back({a0, a1, b1, b0});
-        polygonFaceColors_.push_back(faceColor);
+        polygonFaceColors_.push_back(sideFaceColor);
     }
 
     const std::size_t sideCount = sourceLoop.size();
@@ -460,11 +464,11 @@ HalfEdgeMesh::ExtrusionResult HalfEdgeMesh::InsetExtrudeFace(std::uint32_t faceI
     }
 
     faces_[faceIndex].halfedge = topHalfedges[0];
-    faces_[faceIndex].color = faceColor;
+    faces_[faceIndex].color = topFaceColor;
 
     for (std::size_t i = 0; i < sideCount; ++i) {
         Face face;
-        face.color = faceColor;
+        face.color = sideFaceColor;
         face.halfedge = boundaryHalfedges[i];
         faces_.push_back(face);
         sideFaceIndices[i] = static_cast<std::uint32_t>(faces_.size() - 1);
@@ -602,10 +606,17 @@ void HalfEdgeMesh::BuildRenderBuffers(std::vector<RenderVertex>& vertices, std::
     vertices.clear();
     indices.clear();
 
-    vertices.reserve(vertices_.size());
-    for (const Vertex& vertex : vertices_) {
-        vertices.push_back({vertex.position, vertex.color});
+    std::size_t vertexCount = 0;
+    std::size_t indexCount = 0;
+    for (const std::vector<std::uint32_t>& face : polygonFaces_) {
+        if (face.size() < 3) {
+            continue;
+        }
+        vertexCount += face.size();
+        indexCount += (face.size() - 2) * 3;
     }
+    vertices.reserve(vertexCount);
+    indices.reserve(indexCount);
 
     for (std::size_t faceIndex = 0; faceIndex < polygonFaces_.size(); ++faceIndex) {
         const std::vector<std::uint32_t>& face = polygonFaces_[faceIndex];
@@ -613,10 +624,22 @@ void HalfEdgeMesh::BuildRenderBuffers(std::vector<RenderVertex>& vertices, std::
             continue;
         }
 
+        // Emit per-face vertices so semantic face colors can stay visible even when topology shares positions.
+        const std::uint16_t baseVertex = static_cast<std::uint16_t>(vertices.size());
+        const MeshColor faceColor = polygonFaceColors_[faceIndex];
+
+        for (const std::uint32_t vertexIndex : face) {
+            const Vertex& source = vertices_[vertexIndex];
+            vertices.push_back({
+                source.position,
+                Lerp(source.color, faceColor, 0.7f)
+            });
+        }
+
         for (std::size_t i = 1; i + 1 < face.size(); ++i) {
-            indices.push_back(static_cast<std::uint16_t>(face[0]));
-            indices.push_back(static_cast<std::uint16_t>(face[i]));
-            indices.push_back(static_cast<std::uint16_t>(face[i + 1]));
+            indices.push_back(baseVertex);
+            indices.push_back(static_cast<std::uint16_t>(baseVertex + i));
+            indices.push_back(static_cast<std::uint16_t>(baseVertex + i + 1));
         }
     }
 }

@@ -131,6 +131,15 @@ public:
     }
 
 private:
+    void UpdateWindowTitle() const {
+        SetWindowTextW(hwnd_, showWireframe_ ? L"DX12 Colored Cube [Wireframe]" : kWindowTitle);
+    }
+
+    void ToggleWireframe() {
+        showWireframe_ = !showWireframe_;
+        UpdateWindowTitle();
+    }
+
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         if (message == WM_NCCREATE) {
             const auto* createInfo = reinterpret_cast<CREATESTRUCTW*>(lParam);
@@ -152,13 +161,21 @@ private:
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
+        case WM_KEYDOWN:
+            if ((lParam & 0x40000000) == 0 && (wParam == 'B' || wParam == 'b')) {
+                ToggleWireframe();
+                return 0;
+            }
+            break;
         case WM_DESTROY:
             running_ = false;
             PostQuitMessage(0);
             return 0;
         default:
-            return DefWindowProcW(hwnd, message, wParam, lParam);
+            break;
         }
+
+        return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
     void CreateAppWindow(int cmdShow) {
@@ -192,6 +209,7 @@ private:
         }
 
         ShowWindow(hwnd_, cmdShow);
+        UpdateWindowTitle();
     }
 
     void InitializeD3D() {
@@ -447,15 +465,6 @@ private:
             {"COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         };
 
-        D3D12_RASTERIZER_DESC rasterizerDesc = {};
-        rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
-        rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
-        rasterizerDesc.FrontCounterClockwise = FALSE;
-        rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-        rasterizerDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-        rasterizerDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-        rasterizerDesc.DepthClipEnable = TRUE;
-
         D3D12_BLEND_DESC blendDesc = {};
         blendDesc.RenderTarget[0].BlendEnable = FALSE;
         blendDesc.RenderTarget[0].LogicOpEnable = FALSE;
@@ -473,24 +482,38 @@ private:
         depthStencilDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         depthStencilDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-        psoDesc.InputLayout = {inputElements, _countof(inputElements)};
-        psoDesc.pRootSignature = rootSignature_.Get();
-        psoDesc.VS = {vertexShader_.data(), vertexShader_.size()};
-        psoDesc.PS = {pixelShader_.data(), pixelShader_.size()};
-        psoDesc.RasterizerState = rasterizerDesc;
-        psoDesc.BlendState = blendDesc;
-        psoDesc.DepthStencilState = depthStencilDesc;
-        psoDesc.SampleMask = UINT_MAX;
-        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-        psoDesc.SampleDesc.Count = 1;
+        const auto createMeshPso = [&](D3D12_FILL_MODE fillMode, ComPtr<ID3D12PipelineState>& target, const char* errorMessage) {
+            D3D12_RASTERIZER_DESC rasterizerDesc = {};
+            rasterizerDesc.FillMode = fillMode;
+            rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
+            rasterizerDesc.FrontCounterClockwise = FALSE;
+            rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+            rasterizerDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+            rasterizerDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+            rasterizerDesc.DepthClipEnable = TRUE;
 
-        ThrowIfFailed(
-            device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState_)),
-            "Failed to create the graphics pipeline state.");
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+            psoDesc.InputLayout = {inputElements, _countof(inputElements)};
+            psoDesc.pRootSignature = rootSignature_.Get();
+            psoDesc.VS = {vertexShader_.data(), vertexShader_.size()};
+            psoDesc.PS = {pixelShader_.data(), pixelShader_.size()};
+            psoDesc.RasterizerState = rasterizerDesc;
+            psoDesc.BlendState = blendDesc;
+            psoDesc.DepthStencilState = depthStencilDesc;
+            psoDesc.SampleMask = UINT_MAX;
+            psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            psoDesc.NumRenderTargets = 1;
+            psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+            psoDesc.SampleDesc.Count = 1;
+
+            ThrowIfFailed(
+                device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&target)),
+                errorMessage);
+        };
+
+        createMeshPso(D3D12_FILL_MODE_SOLID, pipelineState_, "Failed to create the solid graphics pipeline state.");
+        createMeshPso(D3D12_FILL_MODE_WIREFRAME, wireframePipelineState_, "Failed to create the wireframe graphics pipeline state.");
     }
 
     void CreateCommandList() {
@@ -698,9 +721,11 @@ private:
     }
 
     void PopulateCommandList() {
+        ID3D12PipelineState* activePipelineState = showWireframe_ ? wireframePipelineState_.Get() : pipelineState_.Get();
+
         ThrowIfFailed(commandAllocators_[frameIndex_]->Reset(), "Failed to reset the command allocator.");
         ThrowIfFailed(
-            commandList_->Reset(commandAllocators_[frameIndex_].Get(), pipelineState_.Get()),
+            commandList_->Reset(commandAllocators_[frameIndex_].Get(), activePipelineState),
             "Failed to reset the command list.");
 
         commandList_->SetGraphicsRootSignature(rootSignature_.Get());
@@ -725,6 +750,7 @@ private:
             constantBuffer_->GetGPUVirtualAddress() + static_cast<UINT64>(frameIndex_) * constantBufferStride_;
 
         commandList_->SetGraphicsRootConstantBufferView(0, cbAddress);
+        commandList_->SetPipelineState(activePipelineState);
         commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         commandList_->IASetVertexBuffers(0, 1, &vertexBufferView_);
         commandList_->IASetIndexBuffer(&indexBufferView_);
@@ -821,6 +847,7 @@ private:
     ComPtr<ID3D12Resource> depthBuffer_;
     ComPtr<ID3D12RootSignature> rootSignature_;
     ComPtr<ID3D12PipelineState> pipelineState_;
+    ComPtr<ID3D12PipelineState> wireframePipelineState_;
     std::vector<std::uint8_t> vertexShader_;
     std::vector<std::uint8_t> pixelShader_;
 
@@ -849,6 +876,7 @@ private:
     std::uint8_t* indexBufferDataBegin_ = nullptr;
     std::uint8_t* constantBufferDataBegin_ = nullptr;
     std::uint32_t animatedFace_ = HalfEdgeMesh::Invalid;
+    bool showWireframe_ = false;
     std::chrono::steady_clock::time_point startTime_;
 };
 
