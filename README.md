@@ -1,6 +1,6 @@
-# DX12 Colored Cube
+# DX12 Road Curve
 
-Minimal Win32 + DirectX 12 app scaffolded as a standalone CMake project. It now renders a rotating cube-derived mesh backed by a simple in-project half-edge structure, with a small runtime face-extrusion deformation demo.
+Minimal Win32 + DirectX 12 app scaffolded as a standalone CMake project. It now starts with an authored ground-plane polyline road intent, rendered with a lightweight debug line path and a simple reference grid.
 
 ## Build
 
@@ -25,6 +25,6 @@ cmake -S . -B build
 
 ## Current demo
 
-- The app starts from a colored cube stored as a half-edge mesh.
-- It performs one simple inset-extrude on the top face.
-- Each frame it uses half-edge face and neighbor traversal to animate that edited region and uploads the updated mesh to the GPU.
+- The app starts with a hard-coded S-shaped `PolylineCurve` on the `XZ` ground plane.
+- A muted ground grid gives the curve spatial context without involving mesh generation.
+- Control points are drawn as distinct markers so the scene already reads like authored road input.

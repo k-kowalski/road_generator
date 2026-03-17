@@ -7,17 +7,15 @@
 
 #include <DirectXMath.h>
 
-#include "HalfEdgeMesh.h"
+#include "PolylineCurve.h"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <utility>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -27,18 +25,28 @@ namespace {
 constexpr UINT kFrameCount = 2;
 constexpr UINT kWindowWidth = 1280;
 constexpr UINT kWindowHeight = 720;
-constexpr wchar_t kWindowClassName[] = L"DX12ColoredCubeWindow";
-constexpr wchar_t kWindowTitle[] = L"DX12 Colored Cube";
+constexpr wchar_t kWindowClassName[] = L"DX12RoadCurveWindow";
+constexpr wchar_t kWindowTitle[] = L"DX12 Road Curve";
 
 struct OrbitCamera {
     float yaw = DirectX::XM_PI;
-    float pitch = 0.24f;
-    float distance = 5.2f;
-    DirectX::XMFLOAT3 target = {0.0f, 0.25f, 0.0f};
+    float pitch = 0.48f;
+    float distance = 5.4f;
+    DirectX::XMFLOAT3 target = {0.0f, 0.15f, 0.0f};
 };
 
 struct SceneConstants {
     DirectX::XMFLOAT4X4 mvp;
+};
+
+struct DebugVertex {
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT3 color;
+};
+
+struct DrawRange {
+    UINT startVertex = 0;
+    UINT vertexCount = 0;
 };
 
 UINT AlignTo(UINT value, UINT alignment) {
@@ -82,7 +90,7 @@ D3D12_RESOURCE_BARRIER TransitionBarrier(
         std::snprintf(buffer, sizeof(buffer), "%s", message);
     }
     OutputDebugStringA(buffer);
-    MessageBoxA(nullptr, buffer, "DX12ColoredCube", MB_OK | MB_ICONERROR);
+    MessageBoxA(nullptr, buffer, "DX12RoadCurve", MB_OK | MB_ICONERROR);
     ExitProcess(1);
 }
 
@@ -90,12 +98,6 @@ void ThrowIfFailed(HRESULT hr, const char* message) {
     if (FAILED(hr)) {
         FatalError(message, hr);
     }
-}
-
-[[noreturn]] void FatalHalfEdgeError(HalfEdgeMesh::ErrorCode error) {
-    char buffer[32] = {};
-    std::snprintf(buffer, sizeof(buffer), "%u", static_cast<unsigned>(error));
-    FatalError(buffer);
 }
 
 std::wstring GetExecutableDirectory() {
@@ -132,32 +134,92 @@ std::vector<std::uint8_t> ReadBinaryFile(const std::wstring& path) {
     return data;
 }
 
-class CubeApp {
+DirectX::XMFLOAT3 OffsetPoint(const DirectX::XMFLOAT3& point, float dx, float dy, float dz) {
+    return {point.x + dx, point.y + dy, point.z + dz};
+}
+
+void AppendLine(
+    std::vector<DebugVertex>& vertices,
+    const DirectX::XMFLOAT3& start,
+    const DirectX::XMFLOAT3& end,
+    const DirectX::XMFLOAT3& color) {
+    vertices.push_back({start, color});
+    vertices.push_back({end, color});
+}
+
+DrawRange BuildGroundGrid(std::vector<DebugVertex>& vertices) {
+    DrawRange range = {};
+    range.startVertex = static_cast<UINT>(vertices.size());
+
+    constexpr float kGridExtent = 3.0f;
+    constexpr float kGridSpacing = 0.5f;
+    constexpr int kGridHalfSteps = 6;
+    const DirectX::XMFLOAT3 gridColor = {0.24f, 0.29f, 0.36f};
+    const DirectX::XMFLOAT3 axisColor = {0.36f, 0.43f, 0.52f};
+
+    for (int step = -kGridHalfSteps; step <= kGridHalfSteps; ++step) {
+        const float coordinate = static_cast<float>(step) * kGridSpacing;
+        const DirectX::XMFLOAT3 color = (step == 0) ? axisColor : gridColor;
+
+        AppendLine(vertices, {-kGridExtent, 0.0f, coordinate}, {kGridExtent, 0.0f, coordinate}, color);
+        AppendLine(vertices, {coordinate, 0.0f, -kGridExtent}, {coordinate, 0.0f, kGridExtent}, color);
+    }
+
+    range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
+    return range;
+}
+
+DrawRange BuildCurveSegments(const PolylineCurve& curve, std::vector<DebugVertex>& vertices) {
+    DrawRange range = {};
+    range.startVertex = static_cast<UINT>(vertices.size());
+
+    const DirectX::XMFLOAT3 curveColor = {0.96f, 0.84f, 0.28f};
+    for (std::size_t i = 1; i < curve.controlPoints.size(); ++i) {
+        AppendLine(vertices, curve.controlPoints[i - 1], curve.controlPoints[i], curveColor);
+    }
+
+    range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
+    return range;
+}
+
+DrawRange BuildControlPointMarkers(const PolylineCurve& curve, std::vector<DebugVertex>& vertices) {
+    DrawRange range = {};
+    range.startVertex = static_cast<UINT>(vertices.size());
+
+    constexpr float kBaseHalfSpan = 0.08f;
+    constexpr float kStemHeight = 0.18f;
+    constexpr float kCrownHalfSpan = 0.05f;
+    const DirectX::XMFLOAT3 markerColor = {0.20f, 0.88f, 0.92f};
+
+    for (const DirectX::XMFLOAT3& point : curve.controlPoints) {
+        const DirectX::XMFLOAT3 crown = OffsetPoint(point, 0.0f, kStemHeight, 0.0f);
+        AppendLine(vertices, OffsetPoint(point, -kBaseHalfSpan, 0.0f, 0.0f), OffsetPoint(point, kBaseHalfSpan, 0.0f, 0.0f), markerColor);
+        AppendLine(vertices, OffsetPoint(point, 0.0f, 0.0f, -kBaseHalfSpan), OffsetPoint(point, 0.0f, 0.0f, kBaseHalfSpan), markerColor);
+        AppendLine(vertices, point, crown, markerColor);
+        AppendLine(vertices, OffsetPoint(crown, -kCrownHalfSpan, 0.0f, 0.0f), OffsetPoint(crown, kCrownHalfSpan, 0.0f, 0.0f), markerColor);
+        AppendLine(vertices, OffsetPoint(crown, 0.0f, 0.0f, -kCrownHalfSpan), OffsetPoint(crown, 0.0f, 0.0f, kCrownHalfSpan), markerColor);
+    }
+
+    range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
+    return range;
+}
+
+class RoadCurveApp {
 public:
     int Run(HINSTANCE instance, int cmdShow) {
         instance_ = instance;
         ResetCamera();
         CreateAppWindow(cmdShow);
         InitializeD3D();
-        startTime_ = std::chrono::steady_clock::now();
-        previousFrameTime_ = startTime_;
+        previousFrameTime_ = std::chrono::steady_clock::now();
         MainLoop();
         Cleanup();
         return 0;
     }
 
 private:
-    void UpdateWindowTitle() const {
-        SetWindowTextW(hwnd_, showWireframe_ ? L"DX12 Colored Cube [Wireframe]" : kWindowTitle);
-    }
-
     void ResetCamera() {
         camera_ = OrbitCamera{};
-    }
-
-    void ToggleWireframe() {
-        showWireframe_ = !showWireframe_;
-        UpdateWindowTitle();
     }
 
     DirectX::XMMATRIX CameraViewMatrix() const {
@@ -213,12 +275,12 @@ private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         if (message == WM_NCCREATE) {
             const auto* createInfo = reinterpret_cast<CREATESTRUCTW*>(lParam);
-            auto* app = static_cast<CubeApp*>(createInfo->lpCreateParams);
+            auto* app = static_cast<RoadCurveApp*>(createInfo->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
             return TRUE;
         }
 
-        auto* app = reinterpret_cast<CubeApp*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        auto* app = reinterpret_cast<RoadCurveApp*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (app != nullptr) {
             return app->HandleMessage(hwnd, message, wParam, lParam);
         }
@@ -232,10 +294,6 @@ private:
             DestroyWindow(hwnd);
             return 0;
         case WM_KEYDOWN:
-            if ((lParam & 0x40000000) == 0 && (wParam == 'B' || wParam == 'b')) {
-                ToggleWireframe();
-                return 0;
-            }
             if ((lParam & 0x40000000) == 0 && wParam == VK_HOME) {
                 ResetCamera();
                 return 0;
@@ -317,7 +375,6 @@ private:
         }
 
         ShowWindow(hwnd_, cmdShow);
-        UpdateWindowTitle();
     }
 
     void InitializeD3D() {
@@ -334,7 +391,7 @@ private:
         LoadCompiledShaders();
         CreatePipelineState();
         CreateCommandList();
-        CreateGeometryBuffers();
+        CreateSceneGeometryBuffers();
         CreateConstantBuffer();
         CreateFenceObjects();
     }
@@ -587,41 +644,36 @@ private:
 
         D3D12_DEPTH_STENCIL_DESC depthStencilDesc = {};
         depthStencilDesc.DepthEnable = TRUE;
-        depthStencilDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-        depthStencilDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        depthStencilDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        depthStencilDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
 
-        const auto createMeshPso = [&](D3D12_FILL_MODE fillMode, ComPtr<ID3D12PipelineState>& target, const char* errorMessage) {
-            D3D12_RASTERIZER_DESC rasterizerDesc = {};
-            rasterizerDesc.FillMode = fillMode;
-            rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
-            rasterizerDesc.FrontCounterClockwise = FALSE;
-            rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-            rasterizerDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-            rasterizerDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-            rasterizerDesc.DepthClipEnable = TRUE;
+        D3D12_RASTERIZER_DESC rasterizerDesc = {};
+        rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
+        rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
+        rasterizerDesc.FrontCounterClockwise = FALSE;
+        rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+        rasterizerDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+        rasterizerDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+        rasterizerDesc.DepthClipEnable = TRUE;
 
-            D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-            psoDesc.InputLayout = {inputElements, _countof(inputElements)};
-            psoDesc.pRootSignature = rootSignature_.Get();
-            psoDesc.VS = {vertexShader_.data(), vertexShader_.size()};
-            psoDesc.PS = {pixelShader_.data(), pixelShader_.size()};
-            psoDesc.RasterizerState = rasterizerDesc;
-            psoDesc.BlendState = blendDesc;
-            psoDesc.DepthStencilState = depthStencilDesc;
-            psoDesc.SampleMask = UINT_MAX;
-            psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-            psoDesc.NumRenderTargets = 1;
-            psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-            psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-            psoDesc.SampleDesc.Count = 1;
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = {inputElements, _countof(inputElements)};
+        psoDesc.pRootSignature = rootSignature_.Get();
+        psoDesc.VS = {vertexShader_.data(), vertexShader_.size()};
+        psoDesc.PS = {pixelShader_.data(), pixelShader_.size()};
+        psoDesc.RasterizerState = rasterizerDesc;
+        psoDesc.BlendState = blendDesc;
+        psoDesc.DepthStencilState = depthStencilDesc;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        psoDesc.SampleDesc.Count = 1;
 
-            ThrowIfFailed(
-                device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&target)),
-                errorMessage);
-        };
-
-        createMeshPso(D3D12_FILL_MODE_SOLID, pipelineState_, "Failed to create the solid graphics pipeline state.");
-        createMeshPso(D3D12_FILL_MODE_WIREFRAME, wireframePipelineState_, "Failed to create the wireframe graphics pipeline state.");
+        ThrowIfFailed(
+            device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&linePipelineState_)),
+            "Failed to create the debug line graphics pipeline state.");
     }
 
     void CreateCommandList() {
@@ -630,69 +682,49 @@ private:
                 0,
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
                 commandAllocators_[frameIndex_].Get(),
-                pipelineState_.Get(),
+                linePipelineState_.Get(),
                 IID_PPV_ARGS(&commandList_)),
             "Failed to create the command list.");
 
         ThrowIfFailed(commandList_->Close(), "Failed to close the initial command list.");
     }
 
-    void CreateGeometryBuffers() {
-        HalfEdgeMeshBuildResult buildResult = MakeColoredCubeMesh();
-        if (buildResult.error) {
-            FatalHalfEdgeError(*buildResult.error);
-        }
-        editableMesh_ = std::move(buildResult.mesh);
-
-        const std::uint32_t topFace = editableMesh_.FindBestFace({0.0f, 1.0f, 0.0f});
-        if (topFace == HalfEdgeMesh::Invalid) {
-            FatalError("Failed to locate the cube's top face.");
+    void CreateSceneGeometryBuffers() {
+        authoredCurve_ = MakeDefaultPolylineCurve();
+        if (const auto error = ValidatePolylineCurve(authoredCurve_)) {
+            FatalError(PolylineCurveValidationErrorMessage(*error));
         }
 
-        const HalfEdgeMesh::ExtrusionResult extrusion = editableMesh_.InsetExtrudeFace(topFace, 0.28f, 0.75f);
-        if (extrusion.error) {
-            FatalHalfEdgeError(*extrusion.error);
+        std::vector<DebugVertex> lineVertices;
+        gridRange_ = BuildGroundGrid(lineVertices);
+        curveRange_ = BuildCurveSegments(authoredCurve_, lineVertices);
+        controlPointRange_ = BuildControlPointMarkers(authoredCurve_, lineVertices);
+
+        if (curveRange_.vertexCount == 0 || controlPointRange_.vertexCount == 0) {
+            FatalError("Failed to build the debug geometry for the authored curve.");
         }
 
-        animatedFace_ = extrusion.topFace;
-
-        if (const auto error = editableMesh_.Validate()) {
-            FatalHalfEdgeError(*error);
-        }
-
-        const std::string meshSummary = editableMesh_.Summary();
-        OutputDebugStringA(meshSummary.c_str());
-
-        editableMesh_.AnimateFaceRegion(animatedFace_, 0.0f);
-        editableMesh_.BuildRenderBuffers(cpuVertices_, cpuIndices_);
-
-        vertexBufferSliceSize_ = AlignTo(static_cast<UINT>(sizeof(RenderVertex) * cpuVertices_.size()), 256);
-        indexBufferSliceSize_ = AlignTo(static_cast<UINT>(sizeof(std::uint16_t) * cpuIndices_.size()), 256);
-
-        CreateMappedUploadBuffer(
-            static_cast<UINT64>(vertexBufferSliceSize_) * kFrameCount,
-            vertexBuffer_,
-            reinterpret_cast<void**>(&vertexBufferDataBegin_),
-            "Failed to create the editable vertex buffer.");
-
-        CreateMappedUploadBuffer(
-            static_cast<UINT64>(indexBufferSliceSize_) * kFrameCount,
-            indexBuffer_,
-            reinterpret_cast<void**>(&indexBufferDataBegin_),
-            "Failed to create the editable index buffer.");
-
-        UploadMeshForCurrentFrame();
+        CreateStaticVertexBuffer(
+            lineVertices,
+            lineVertexBuffer_,
+            lineVertexBufferView_,
+            "Failed to create the debug line vertex buffer.");
     }
 
-    void CreateMappedUploadBuffer(
-        UINT64 sizeInBytes,
+    void CreateStaticVertexBuffer(
+        const std::vector<DebugVertex>& vertices,
         ComPtr<ID3D12Resource>& buffer,
-        void** mappedData,
+        D3D12_VERTEX_BUFFER_VIEW& view,
         const char* errorMessage) {
+        if (vertices.empty()) {
+            FatalError("Cannot create a GPU buffer for an empty vertex array.");
+        }
+
         D3D12_HEAP_PROPERTIES heapProps = {};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 
-        const D3D12_RESOURCE_DESC desc = BufferDesc(sizeInBytes);
+        const UINT bufferSize = static_cast<UINT>(sizeof(DebugVertex) * vertices.size());
+        const D3D12_RESOURCE_DESC desc = BufferDesc(bufferSize);
         ThrowIfFailed(
             device_->CreateCommittedResource(
                 &heapProps,
@@ -703,35 +735,15 @@ private:
                 IID_PPV_ARGS(&buffer)),
             errorMessage);
 
+        void* mappedData = nullptr;
         D3D12_RANGE readRange = {0, 0};
-        ThrowIfFailed(buffer->Map(0, &readRange, mappedData), "Failed to map an upload buffer.");
-    }
+        ThrowIfFailed(buffer->Map(0, &readRange, &mappedData), "Failed to map an upload buffer.");
+        std::memcpy(mappedData, vertices.data(), bufferSize);
+        buffer->Unmap(0, nullptr);
 
-    void UploadMeshForCurrentFrame() {
-        editableMesh_.BuildRenderBuffers(cpuVertices_, cpuIndices_);
-
-        const UINT vertexBytes = static_cast<UINT>(sizeof(RenderVertex) * cpuVertices_.size());
-        const UINT indexBytes = static_cast<UINT>(sizeof(std::uint16_t) * cpuIndices_.size());
-
-        if (vertexBytes > vertexBufferSliceSize_ || indexBytes > indexBufferSliceSize_) {
-            FatalError("The editable mesh grew beyond the current GPU buffer capacity.");
-        }
-
-        const size_t vertexOffset = static_cast<size_t>(frameIndex_) * vertexBufferSliceSize_;
-        const size_t indexOffset = static_cast<size_t>(frameIndex_) * indexBufferSliceSize_;
-
-        std::memcpy(vertexBufferDataBegin_ + vertexOffset, cpuVertices_.data(), vertexBytes);
-        std::memcpy(indexBufferDataBegin_ + indexOffset, cpuIndices_.data(), indexBytes);
-
-        vertexBufferView_.BufferLocation = vertexBuffer_->GetGPUVirtualAddress() + vertexOffset;
-        vertexBufferView_.StrideInBytes = sizeof(RenderVertex);
-        vertexBufferView_.SizeInBytes = vertexBytes;
-
-        indexBufferView_.BufferLocation = indexBuffer_->GetGPUVirtualAddress() + indexOffset;
-        indexBufferView_.Format = DXGI_FORMAT_R16_UINT;
-        indexBufferView_.SizeInBytes = indexBytes;
-
-        indexCount_ = static_cast<UINT>(cpuIndices_.size());
+        view.BufferLocation = buffer->GetGPUVirtualAddress();
+        view.StrideInBytes = sizeof(DebugVertex);
+        view.SizeInBytes = bufferSize;
     }
 
     void CreateConstantBuffer() {
@@ -802,15 +814,11 @@ private:
 
     void UpdateSceneConstants() {
         const auto now = std::chrono::steady_clock::now();
-        const float timeSeconds = std::chrono::duration<float>(now - startTime_).count();
         const float deltaSeconds = std::chrono::duration<float>(now - previousFrameTime_).count();
         previousFrameTime_ = now;
 
-        editableMesh_.AnimateFaceRegion(animatedFace_, timeSeconds);
-        UploadMeshForCurrentFrame();
         UpdateCamera(deltaSeconds);
 
-        const DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
         const DirectX::XMMATRIX view = CameraViewMatrix();
         const DirectX::XMMATRIX projection = DirectX::XMMatrixPerspectiveFovLH(
             DirectX::XMConvertToRadians(60.0f),
@@ -819,7 +827,7 @@ private:
             100.0f);
 
         SceneConstants constants = {};
-        DirectX::XMStoreFloat4x4(&constants.mvp, DirectX::XMMatrixTranspose(world * view * projection));
+        DirectX::XMStoreFloat4x4(&constants.mvp, DirectX::XMMatrixTranspose(view * projection));
 
         std::memcpy(
             constantBufferDataBegin_ + static_cast<size_t>(frameIndex_) * constantBufferStride_,
@@ -828,11 +836,9 @@ private:
     }
 
     void PopulateCommandList() {
-        ID3D12PipelineState* activePipelineState = showWireframe_ ? wireframePipelineState_.Get() : pipelineState_.Get();
-
         ThrowIfFailed(commandAllocators_[frameIndex_]->Reset(), "Failed to reset the command allocator.");
         ThrowIfFailed(
-            commandList_->Reset(commandAllocators_[frameIndex_].Get(), activePipelineState),
+            commandList_->Reset(commandAllocators_[frameIndex_].Get(), linePipelineState_.Get()),
             "Failed to reset the command list.");
 
         commandList_->SetGraphicsRootSignature(rootSignature_.Get());
@@ -857,11 +863,11 @@ private:
             constantBuffer_->GetGPUVirtualAddress() + static_cast<UINT64>(frameIndex_) * constantBufferStride_;
 
         commandList_->SetGraphicsRootConstantBufferView(0, cbAddress);
-        commandList_->SetPipelineState(activePipelineState);
-        commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        commandList_->IASetVertexBuffers(0, 1, &vertexBufferView_);
-        commandList_->IASetIndexBuffer(&indexBufferView_);
-        commandList_->DrawIndexedInstanced(indexCount_, 1, 0, 0, 0);
+        commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+        commandList_->IASetVertexBuffers(0, 1, &lineVertexBufferView_);
+        commandList_->DrawInstanced(gridRange_.vertexCount, 1, gridRange_.startVertex, 0);
+        commandList_->DrawInstanced(curveRange_.vertexCount, 1, curveRange_.startVertex, 0);
+        commandList_->DrawInstanced(controlPointRange_.vertexCount, 1, controlPointRange_.startVertex, 0);
 
         const D3D12_RESOURCE_BARRIER toPresent = TransitionBarrier(
             renderTargets_[frameIndex_].Get(),
@@ -906,16 +912,6 @@ private:
             WaitForGpu();
         }
 
-        if (vertexBuffer_ != nullptr && vertexBufferDataBegin_ != nullptr) {
-            vertexBuffer_->Unmap(0, nullptr);
-            vertexBufferDataBegin_ = nullptr;
-        }
-
-        if (indexBuffer_ != nullptr && indexBufferDataBegin_ != nullptr) {
-            indexBuffer_->Unmap(0, nullptr);
-            indexBufferDataBegin_ = nullptr;
-        }
-
         if (constantBuffer_ != nullptr && constantBufferDataBegin_ != nullptr) {
             constantBuffer_->Unmap(0, nullptr);
             constantBufferDataBegin_ = nullptr;
@@ -953,48 +949,38 @@ private:
     ComPtr<ID3D12Resource> renderTargets_[kFrameCount];
     ComPtr<ID3D12Resource> depthBuffer_;
     ComPtr<ID3D12RootSignature> rootSignature_;
-    ComPtr<ID3D12PipelineState> pipelineState_;
-    ComPtr<ID3D12PipelineState> wireframePipelineState_;
+    ComPtr<ID3D12PipelineState> linePipelineState_;
     std::vector<std::uint8_t> vertexShader_;
     std::vector<std::uint8_t> pixelShader_;
 
-    ComPtr<ID3D12Resource> vertexBuffer_;
-    ComPtr<ID3D12Resource> indexBuffer_;
+    ComPtr<ID3D12Resource> lineVertexBuffer_;
     ComPtr<ID3D12Resource> constantBuffer_;
 
-    HalfEdgeMesh editableMesh_;
-    std::vector<RenderVertex> cpuVertices_;
-    std::vector<std::uint16_t> cpuIndices_;
+    PolylineCurve authoredCurve_;
+    DrawRange gridRange_ = {};
+    DrawRange curveRange_ = {};
+    DrawRange controlPointRange_ = {};
 
     D3D12_VIEWPORT viewport_ = {};
     D3D12_RECT scissorRect_ = {};
-    D3D12_VERTEX_BUFFER_VIEW vertexBufferView_ = {};
-    D3D12_INDEX_BUFFER_VIEW indexBufferView_ = {};
+    D3D12_VERTEX_BUFFER_VIEW lineVertexBufferView_ = {};
 
     UINT rtvDescriptorSize_ = 0;
     UINT frameIndex_ = 0;
-    UINT indexCount_ = 0;
     UINT constantBufferStride_ = 0;
-    UINT vertexBufferSliceSize_ = 0;
-    UINT indexBufferSliceSize_ = 0;
     UINT64 fenceValues_[kFrameCount] = {};
     HANDLE fenceEvent_ = nullptr;
-    std::uint8_t* vertexBufferDataBegin_ = nullptr;
-    std::uint8_t* indexBufferDataBegin_ = nullptr;
     std::uint8_t* constantBufferDataBegin_ = nullptr;
-    std::uint32_t animatedFace_ = HalfEdgeMesh::Invalid;
     OrbitCamera camera_{};
     bool orbitingCamera_ = false;
-    bool showWireframe_ = false;
     int lastMouseX_ = 0;
     int lastMouseY_ = 0;
-    std::chrono::steady_clock::time_point startTime_;
     std::chrono::steady_clock::time_point previousFrameTime_;
 };
 
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int cmdShow) {
-    CubeApp app;
+    RoadCurveApp app;
     return app.Run(instance, cmdShow);
 }

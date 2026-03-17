@@ -9,12 +9,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(DX12ColoredCube WIN32
     src/HalfEdgeMesh.cpp
     src/HalfEdgeMesh.h
+    src/PolylineCurve.cpp
+    src/PolylineCurve.h
     src/main.cpp
     shaders/cube.hlsl
 )
 
 source_group("Shaders" FILES shaders/cube.hlsl)
-source_group("Source Files" FILES src/HalfEdgeMesh.cpp src/HalfEdgeMesh.h)
+source_group("Source Files" FILES src/HalfEdgeMesh.cpp src/HalfEdgeMesh.h src/PolylineCurve.cpp src/PolylineCurve.h)
 set_source_files_properties(shaders/cube.hlsl PROPERTIES HEADER_FILE_ONLY YES)
 
 set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.hlsl")
