@@ -17,6 +17,7 @@ struct PolylineCurve {
 };
 
 PolylineCurve MakeDefaultPolylineCurve();
+PolylineCurve SubdividePolylineCurveTowardsBezierLimit(const PolylineCurve& curve);
 std::optional<PolylineCurveValidationError> ValidatePolylineCurve(
     const PolylineCurve& curve,
     float groundTolerance = 1.0e-4f);

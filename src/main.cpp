@@ -49,6 +49,15 @@ struct DrawRange {
     UINT vertexCount = 0;
 };
 
+struct CurveDebugStyle {
+    DirectX::XMFLOAT3 segmentColor;
+    DirectX::XMFLOAT3 markerColor;
+    float yOffset = 0.0f;
+    float baseHalfSpan = 0.08f;
+    float stemHeight = 0.18f;
+    float crownHalfSpan = 0.05f;
+};
+
 UINT AlignTo(UINT value, UINT alignment) {
     return (value + alignment - 1U) & ~(alignment - 1U);
 }
@@ -138,6 +147,10 @@ DirectX::XMFLOAT3 OffsetPoint(const DirectX::XMFLOAT3& point, float dx, float dy
     return {point.x + dx, point.y + dy, point.z + dz};
 }
 
+DirectX::XMFLOAT3 LiftPoint(const DirectX::XMFLOAT3& point, float yOffset) {
+    return OffsetPoint(point, 0.0f, yOffset, 0.0f);
+}
+
 void AppendLine(
     std::vector<DebugVertex>& vertices,
     const DirectX::XMFLOAT3& start,
@@ -169,35 +182,56 @@ DrawRange BuildGroundGrid(std::vector<DebugVertex>& vertices) {
     return range;
 }
 
-DrawRange BuildCurveSegments(const PolylineCurve& curve, std::vector<DebugVertex>& vertices) {
+DrawRange BuildCurveSegments(
+    const PolylineCurve& curve,
+    const CurveDebugStyle& style,
+    std::vector<DebugVertex>& vertices) {
     DrawRange range = {};
     range.startVertex = static_cast<UINT>(vertices.size());
 
-    const DirectX::XMFLOAT3 curveColor = {0.96f, 0.84f, 0.28f};
     for (std::size_t i = 1; i < curve.controlPoints.size(); ++i) {
-        AppendLine(vertices, curve.controlPoints[i - 1], curve.controlPoints[i], curveColor);
+        AppendLine(
+            vertices,
+            LiftPoint(curve.controlPoints[i - 1], style.yOffset),
+            LiftPoint(curve.controlPoints[i], style.yOffset),
+            style.segmentColor);
     }
 
     range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
     return range;
 }
 
-DrawRange BuildControlPointMarkers(const PolylineCurve& curve, std::vector<DebugVertex>& vertices) {
+DrawRange BuildControlPointMarkers(
+    const PolylineCurve& curve,
+    const CurveDebugStyle& style,
+    std::vector<DebugVertex>& vertices) {
     DrawRange range = {};
     range.startVertex = static_cast<UINT>(vertices.size());
 
-    constexpr float kBaseHalfSpan = 0.08f;
-    constexpr float kStemHeight = 0.18f;
-    constexpr float kCrownHalfSpan = 0.05f;
-    const DirectX::XMFLOAT3 markerColor = {0.20f, 0.88f, 0.92f};
-
     for (const DirectX::XMFLOAT3& point : curve.controlPoints) {
-        const DirectX::XMFLOAT3 crown = OffsetPoint(point, 0.0f, kStemHeight, 0.0f);
-        AppendLine(vertices, OffsetPoint(point, -kBaseHalfSpan, 0.0f, 0.0f), OffsetPoint(point, kBaseHalfSpan, 0.0f, 0.0f), markerColor);
-        AppendLine(vertices, OffsetPoint(point, 0.0f, 0.0f, -kBaseHalfSpan), OffsetPoint(point, 0.0f, 0.0f, kBaseHalfSpan), markerColor);
-        AppendLine(vertices, point, crown, markerColor);
-        AppendLine(vertices, OffsetPoint(crown, -kCrownHalfSpan, 0.0f, 0.0f), OffsetPoint(crown, kCrownHalfSpan, 0.0f, 0.0f), markerColor);
-        AppendLine(vertices, OffsetPoint(crown, 0.0f, 0.0f, -kCrownHalfSpan), OffsetPoint(crown, 0.0f, 0.0f, kCrownHalfSpan), markerColor);
+        const DirectX::XMFLOAT3 liftedPoint = LiftPoint(point, style.yOffset);
+        const DirectX::XMFLOAT3 crown = OffsetPoint(liftedPoint, 0.0f, style.stemHeight, 0.0f);
+        AppendLine(
+            vertices,
+            OffsetPoint(liftedPoint, -style.baseHalfSpan, 0.0f, 0.0f),
+            OffsetPoint(liftedPoint, style.baseHalfSpan, 0.0f, 0.0f),
+            style.markerColor);
+        AppendLine(
+            vertices,
+            OffsetPoint(liftedPoint, 0.0f, 0.0f, -style.baseHalfSpan),
+            OffsetPoint(liftedPoint, 0.0f, 0.0f, style.baseHalfSpan),
+            style.markerColor);
+        AppendLine(vertices, liftedPoint, crown, style.markerColor);
+        AppendLine(
+            vertices,
+            OffsetPoint(crown, -style.crownHalfSpan, 0.0f, 0.0f),
+            OffsetPoint(crown, style.crownHalfSpan, 0.0f, 0.0f),
+            style.markerColor);
+        AppendLine(
+            vertices,
+            OffsetPoint(crown, 0.0f, 0.0f, -style.crownHalfSpan),
+            OffsetPoint(crown, 0.0f, 0.0f, style.crownHalfSpan),
+            style.markerColor);
     }
 
     range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
@@ -690,18 +724,45 @@ private:
     }
 
     void CreateSceneGeometryBuffers() {
-        authoredCurve_ = MakeDefaultPolylineCurve();
-        if (const auto error = ValidatePolylineCurve(authoredCurve_)) {
+        originalCurve_ = MakeDefaultPolylineCurve();
+        if (const auto error = ValidatePolylineCurve(originalCurve_)) {
             FatalError(PolylineCurveValidationErrorMessage(*error));
         }
 
+        subdividedCurve_ = SubdividePolylineCurveTowardsBezierLimit(originalCurve_);
+        if (const auto error = ValidatePolylineCurve(subdividedCurve_)) {
+            FatalError(PolylineCurveValidationErrorMessage(*error));
+        }
+
+        const CurveDebugStyle originalStyle = {
+            {0.95f, 0.56f, 0.21f},
+            {1.00f, 0.76f, 0.46f},
+            0.02f,
+            0.09f,
+            0.20f,
+            0.06f,
+        };
+        const CurveDebugStyle subdividedStyle = {
+            {0.18f, 0.84f, 0.90f},
+            {0.72f, 0.98f, 1.00f},
+            0.09f,
+            0.06f,
+            0.14f,
+            0.03f,
+        };
+
         std::vector<DebugVertex> lineVertices;
         gridRange_ = BuildGroundGrid(lineVertices);
-        curveRange_ = BuildCurveSegments(authoredCurve_, lineVertices);
-        controlPointRange_ = BuildControlPointMarkers(authoredCurve_, lineVertices);
+        originalCurveRange_ = BuildCurveSegments(originalCurve_, originalStyle, lineVertices);
+        subdividedCurveRange_ = BuildCurveSegments(subdividedCurve_, subdividedStyle, lineVertices);
+        originalControlPointRange_ = BuildControlPointMarkers(originalCurve_, originalStyle, lineVertices);
+        subdividedControlPointRange_ = BuildControlPointMarkers(subdividedCurve_, subdividedStyle, lineVertices);
 
-        if (curveRange_.vertexCount == 0 || controlPointRange_.vertexCount == 0) {
-            FatalError("Failed to build the debug geometry for the authored curve.");
+        if (originalCurveRange_.vertexCount == 0 ||
+            subdividedCurveRange_.vertexCount == 0 ||
+            originalControlPointRange_.vertexCount == 0 ||
+            subdividedControlPointRange_.vertexCount == 0) {
+            FatalError("Failed to build the debug geometry for the original and subdivided curves.");
         }
 
         CreateStaticVertexBuffer(
@@ -866,8 +927,10 @@ private:
         commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
         commandList_->IASetVertexBuffers(0, 1, &lineVertexBufferView_);
         commandList_->DrawInstanced(gridRange_.vertexCount, 1, gridRange_.startVertex, 0);
-        commandList_->DrawInstanced(curveRange_.vertexCount, 1, curveRange_.startVertex, 0);
-        commandList_->DrawInstanced(controlPointRange_.vertexCount, 1, controlPointRange_.startVertex, 0);
+        commandList_->DrawInstanced(originalCurveRange_.vertexCount, 1, originalCurveRange_.startVertex, 0);
+        commandList_->DrawInstanced(subdividedCurveRange_.vertexCount, 1, subdividedCurveRange_.startVertex, 0);
+        commandList_->DrawInstanced(originalControlPointRange_.vertexCount, 1, originalControlPointRange_.startVertex, 0);
+        commandList_->DrawInstanced(subdividedControlPointRange_.vertexCount, 1, subdividedControlPointRange_.startVertex, 0);
 
         const D3D12_RESOURCE_BARRIER toPresent = TransitionBarrier(
             renderTargets_[frameIndex_].Get(),
@@ -956,10 +1019,13 @@ private:
     ComPtr<ID3D12Resource> lineVertexBuffer_;
     ComPtr<ID3D12Resource> constantBuffer_;
 
-    PolylineCurve authoredCurve_;
+    PolylineCurve originalCurve_;
+    PolylineCurve subdividedCurve_;
     DrawRange gridRange_ = {};
-    DrawRange curveRange_ = {};
-    DrawRange controlPointRange_ = {};
+    DrawRange originalCurveRange_ = {};
+    DrawRange subdividedCurveRange_ = {};
+    DrawRange originalControlPointRange_ = {};
+    DrawRange subdividedControlPointRange_ = {};
 
     D3D12_VIEWPORT viewport_ = {};
     D3D12_RECT scissorRect_ = {};
