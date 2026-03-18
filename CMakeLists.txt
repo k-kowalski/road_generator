@@ -11,18 +11,24 @@ add_executable(DX12ColoredCube WIN32
     src/HalfEdgeMesh.h
     src/PolylineCurve.cpp
     src/PolylineCurve.h
+    src/RibbonMesh.cpp
+    src/RibbonMesh.h
     src/main.cpp
     shaders/cube.hlsl
+    shaders/ribbon.hlsl
 )
 
-source_group("Shaders" FILES shaders/cube.hlsl)
-source_group("Source Files" FILES src/HalfEdgeMesh.cpp src/HalfEdgeMesh.h src/PolylineCurve.cpp src/PolylineCurve.h)
-set_source_files_properties(shaders/cube.hlsl PROPERTIES HEADER_FILE_ONLY YES)
+source_group("Shaders" FILES shaders/cube.hlsl shaders/ribbon.hlsl)
+source_group("Source Files" FILES src/HalfEdgeMesh.cpp src/HalfEdgeMesh.h src/PolylineCurve.cpp src/PolylineCurve.h src/RibbonMesh.cpp src/RibbonMesh.h)
+set_source_files_properties(shaders/cube.hlsl shaders/ribbon.hlsl PROPERTIES HEADER_FILE_ONLY YES)
 
-set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.hlsl")
 set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-set(VERTEX_SHADER_OUTPUT "${SHADER_OUTPUT_DIR}/cube_vs.cso")
-set(PIXEL_SHADER_OUTPUT "${SHADER_OUTPUT_DIR}/cube_ps.cso")
+set(LINE_SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.hlsl")
+set(LINE_VERTEX_SHADER_OUTPUT "${SHADER_OUTPUT_DIR}/cube_vs.cso")
+set(LINE_PIXEL_SHADER_OUTPUT "${SHADER_OUTPUT_DIR}/cube_ps.cso")
+set(RIBBON_SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ribbon.hlsl")
+set(RIBBON_VERTEX_SHADER_OUTPUT "${SHADER_OUTPUT_DIR}/ribbon_vs.cso")
+set(RIBBON_PIXEL_SHADER_OUTPUT "${SHADER_OUTPUT_DIR}/ribbon_ps.cso")
 
 find_program(FXC_EXE
     NAMES fxc
@@ -40,7 +46,7 @@ endif()
 file(MAKE_DIRECTORY "${SHADER_OUTPUT_DIR}")
 
 execute_process(
-    COMMAND "${FXC_EXE}" /nologo /T vs_5_0 /E VSMain /Fo "${VERTEX_SHADER_OUTPUT}" "${SHADER_SOURCE}"
+    COMMAND "${FXC_EXE}" /nologo /T vs_5_0 /E VSMain /Fo "${LINE_VERTEX_SHADER_OUTPUT}" "${LINE_SHADER_SOURCE}"
     RESULT_VARIABLE FXC_VS_RESULT
     OUTPUT_VARIABLE FXC_VS_STDOUT
     ERROR_VARIABLE FXC_VS_STDERR
@@ -51,7 +57,7 @@ if(NOT FXC_VS_RESULT EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${FXC_EXE}" /nologo /T ps_5_0 /E PSMain /Fo "${PIXEL_SHADER_OUTPUT}" "${SHADER_SOURCE}"
+    COMMAND "${FXC_EXE}" /nologo /T ps_5_0 /E PSMain /Fo "${LINE_PIXEL_SHADER_OUTPUT}" "${LINE_SHADER_SOURCE}"
     RESULT_VARIABLE FXC_PS_RESULT
     OUTPUT_VARIABLE FXC_PS_STDOUT
     ERROR_VARIABLE FXC_PS_STDERR
@@ -59,6 +65,28 @@ execute_process(
 
 if(NOT FXC_PS_RESULT EQUAL 0)
     message(FATAL_ERROR "Pixel shader compilation failed during CMake configure.\n${FXC_PS_STDOUT}\n${FXC_PS_STDERR}")
+endif()
+
+execute_process(
+    COMMAND "${FXC_EXE}" /nologo /T vs_5_0 /E VSMain /Fo "${RIBBON_VERTEX_SHADER_OUTPUT}" "${RIBBON_SHADER_SOURCE}"
+    RESULT_VARIABLE FXC_RIBBON_VS_RESULT
+    OUTPUT_VARIABLE FXC_RIBBON_VS_STDOUT
+    ERROR_VARIABLE FXC_RIBBON_VS_STDERR
+)
+
+if(NOT FXC_RIBBON_VS_RESULT EQUAL 0)
+    message(FATAL_ERROR "Ribbon vertex shader compilation failed during CMake configure.\n${FXC_RIBBON_VS_STDOUT}\n${FXC_RIBBON_VS_STDERR}")
+endif()
+
+execute_process(
+    COMMAND "${FXC_EXE}" /nologo /T ps_5_0 /E PSMain /Fo "${RIBBON_PIXEL_SHADER_OUTPUT}" "${RIBBON_SHADER_SOURCE}"
+    RESULT_VARIABLE FXC_RIBBON_PS_RESULT
+    OUTPUT_VARIABLE FXC_RIBBON_PS_STDOUT
+    ERROR_VARIABLE FXC_RIBBON_PS_STDERR
+)
+
+if(NOT FXC_RIBBON_PS_RESULT EQUAL 0)
+    message(FATAL_ERROR "Ribbon pixel shader compilation failed during CMake configure.\n${FXC_RIBBON_PS_STDOUT}\n${FXC_RIBBON_PS_STDERR}")
 endif()
 
 target_compile_definitions(DX12ColoredCube PRIVATE
@@ -83,12 +111,19 @@ target_link_libraries(DX12ColoredCube PRIVATE
 add_custom_command(TARGET DX12ColoredCube POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -f
         "$<TARGET_FILE_DIR:DX12ColoredCube>/cube.hlsl"
+        "$<TARGET_FILE_DIR:DX12ColoredCube>/ribbon.hlsl"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${VERTEX_SHADER_OUTPUT}"
+        "${LINE_VERTEX_SHADER_OUTPUT}"
         "$<TARGET_FILE_DIR:DX12ColoredCube>/cube_vs.cso"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${PIXEL_SHADER_OUTPUT}"
+        "${LINE_PIXEL_SHADER_OUTPUT}"
         "$<TARGET_FILE_DIR:DX12ColoredCube>/cube_ps.cso"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${RIBBON_VERTEX_SHADER_OUTPUT}"
+        "$<TARGET_FILE_DIR:DX12ColoredCube>/ribbon_vs.cso"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${RIBBON_PIXEL_SHADER_OUTPUT}"
+        "$<TARGET_FILE_DIR:DX12ColoredCube>/ribbon_ps.cso"
 )
 
 set_target_properties(DX12ColoredCube PROPERTIES

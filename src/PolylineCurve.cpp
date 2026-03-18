@@ -35,11 +35,10 @@ DirectX::XMFLOAT3 SmoothInteriorPoint(
 PolylineCurve MakeDefaultPolylineCurve() {
     PolylineCurve curve;
     curve.controlPoints = {
-        {-1.25f, 0.0f, -0.90f},
-        {-0.55f, 0.0f, -0.10f},
-        {0.00f, 0.0f, 0.70f},
-        {0.65f, 0.0f, -0.15f},
-        {1.25f, 0.0f, 0.85f},
+        {-1.25f, 0.0f, 1.10f},
+        {-1.25f, 0.0f, -1.10f},
+        {1.25f, 0.0f, -1.10f},
+        {1.25f, 0.0f, 1.10f},
     };
     return curve;
 }

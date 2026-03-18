@@ -8,6 +8,7 @@
 #include <DirectXMath.h>
 
 #include "PolylineCurve.h"
+#include "RibbonMesh.h"
 
 #include <algorithm>
 #include <chrono>
@@ -27,12 +28,17 @@ constexpr UINT kWindowWidth = 1280;
 constexpr UINT kWindowHeight = 720;
 constexpr wchar_t kWindowClassName[] = L"DX12RoadCurveWindow";
 constexpr wchar_t kWindowTitle[] = L"DX12 Road Curve";
+constexpr float kRibbonHalfWidth = 0.20f;
+constexpr float kRibbonYOffset = 0.01f;
+constexpr RibbonTangentMode kRibbonTangentMode = RibbonTangentMode::AverageSegmentDirections;
+constexpr float kTangentDebugYOffset = 0.14f;
+constexpr float kTangentDebugLength = 0.28f;
 
 struct OrbitCamera {
     float yaw = DirectX::XM_PI;
     float pitch = 0.48f;
-    float distance = 5.4f;
-    DirectX::XMFLOAT3 target = {0.0f, 0.15f, 0.0f};
+    float distance = 7.2f;
+    DirectX::XMFLOAT3 target = {1.5f, 0.15f, 0.0f};
 };
 
 struct SceneConstants {
@@ -64,6 +70,41 @@ UINT AlignTo(UINT value, UINT alignment) {
 
 float ClampFloat(float value, float minValue, float maxValue) {
     return std::clamp(value, minValue, maxValue);
+}
+
+D3D12_BLEND_DESC OpaqueBlendDesc() {
+    D3D12_BLEND_DESC blendDesc = {};
+    blendDesc.RenderTarget[0].BlendEnable = FALSE;
+    blendDesc.RenderTarget[0].LogicOpEnable = FALSE;
+    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
+    blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
+    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    return blendDesc;
+}
+
+D3D12_RASTERIZER_DESC DefaultRasterizerDesc() {
+    D3D12_RASTERIZER_DESC rasterizerDesc = {};
+    rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
+    rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
+    rasterizerDesc.FrontCounterClockwise = FALSE;
+    rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    rasterizerDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    rasterizerDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    rasterizerDesc.DepthClipEnable = TRUE;
+    return rasterizerDesc;
+}
+
+D3D12_DEPTH_STENCIL_DESC DepthStencilDesc(D3D12_DEPTH_WRITE_MASK depthWriteMask) {
+    D3D12_DEPTH_STENCIL_DESC depthStencilDesc = {};
+    depthStencilDesc.DepthEnable = TRUE;
+    depthStencilDesc.DepthWriteMask = depthWriteMask;
+    depthStencilDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    return depthStencilDesc;
 }
 
 D3D12_RESOURCE_DESC BufferDesc(UINT64 sizeInBytes) {
@@ -151,6 +192,38 @@ DirectX::XMFLOAT3 LiftPoint(const DirectX::XMFLOAT3& point, float yOffset) {
     return OffsetPoint(point, 0.0f, yOffset, 0.0f);
 }
 
+PolylineCurve MakeReferenceSCurve() {
+    PolylineCurve curve;
+    curve.controlPoints = {
+        {-1.25f, 0.0f, -0.90f},
+        {-0.55f, 0.0f, -0.10f},
+        {0.00f, 0.0f, 0.70f},
+        {0.65f, 0.0f, -0.15f},
+        {1.25f, 0.0f, 0.85f},
+    };
+    return curve;
+}
+
+PolylineCurve TranslateCurve(const PolylineCurve& curve, float dx, float dy, float dz) {
+    PolylineCurve translatedCurve;
+    translatedCurve.controlPoints.reserve(curve.controlPoints.size());
+
+    for (const DirectX::XMFLOAT3& point : curve.controlPoints) {
+        translatedCurve.controlPoints.push_back(OffsetPoint(point, dx, dy, dz));
+    }
+
+    return translatedCurve;
+}
+
+void AppendRibbonMesh(const RibbonMeshData& source, RibbonMeshData& destination) {
+    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(destination.vertices.size());
+    destination.vertices.insert(destination.vertices.end(), source.vertices.begin(), source.vertices.end());
+    destination.indices.reserve(destination.indices.size() + source.indices.size());
+    for (std::uint32_t index : source.indices) {
+        destination.indices.push_back(vertexOffset + index);
+    }
+}
+
 void AppendLine(
     std::vector<DebugVertex>& vertices,
     const DirectX::XMFLOAT3& start,
@@ -164,9 +237,9 @@ DrawRange BuildGroundGrid(std::vector<DebugVertex>& vertices) {
     DrawRange range = {};
     range.startVertex = static_cast<UINT>(vertices.size());
 
-    constexpr float kGridExtent = 3.0f;
+    constexpr float kGridExtent = 6.0f;
     constexpr float kGridSpacing = 0.5f;
-    constexpr int kGridHalfSteps = 6;
+    constexpr int kGridHalfSteps = 12;
     const DirectX::XMFLOAT3 gridColor = {0.24f, 0.29f, 0.36f};
     const DirectX::XMFLOAT3 axisColor = {0.36f, 0.43f, 0.52f};
 
@@ -232,6 +305,34 @@ DrawRange BuildControlPointMarkers(
             OffsetPoint(crown, 0.0f, 0.0f, -style.crownHalfSpan),
             OffsetPoint(crown, 0.0f, 0.0f, style.crownHalfSpan),
             style.markerColor);
+    }
+
+    range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
+    return range;
+}
+
+DrawRange BuildTangentSegments(
+    const PolylineCurve& curve,
+    const std::vector<DirectX::XMFLOAT3>& tangents,
+    float yOffset,
+    float lineLength,
+    const DirectX::XMFLOAT3& color,
+    std::vector<DebugVertex>& vertices) {
+    DrawRange range = {};
+    range.startVertex = static_cast<UINT>(vertices.size());
+
+    if (curve.controlPoints.size() != tangents.size()) {
+        return range;
+    }
+
+    for (std::size_t i = 0; i < curve.controlPoints.size(); ++i) {
+        const DirectX::XMFLOAT3 start = LiftPoint(curve.controlPoints[i], yOffset);
+        const DirectX::XMFLOAT3 end = {
+            start.x + tangents[i].x * lineLength,
+            start.y + tangents[i].y * lineLength,
+            start.z + tangents[i].z * lineLength,
+        };
+        AppendLine(vertices, start, end, color);
     }
 
     range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
@@ -328,9 +429,23 @@ private:
             DestroyWindow(hwnd);
             return 0;
         case WM_KEYDOWN:
-            if ((lParam & 0x40000000) == 0 && wParam == VK_HOME) {
-                ResetCamera();
-                return 0;
+            if ((lParam & 0x40000000) == 0) {
+                switch (wParam) {
+                case VK_HOME:
+                    ResetCamera();
+                    return 0;
+                case '1':
+                    showOriginalCurve_ = !showOriginalCurve_;
+                    return 0;
+                case '2':
+                    showSubdividedCurve_ = !showSubdividedCurve_;
+                    return 0;
+                case '3':
+                    showRibbon_ = !showRibbon_;
+                    return 0;
+                default:
+                    break;
+                }
             }
             break;
         case WM_RBUTTONDOWN:
@@ -423,7 +538,7 @@ private:
         CreateDepthBuffer();
         CreateRootSignature();
         LoadCompiledShaders();
-        CreatePipelineState();
+        CreatePipelineStates();
         CreateCommandList();
         CreateSceneGeometryBuffers();
         CreateConstantBuffer();
@@ -650,54 +765,38 @@ private:
 
     void LoadCompiledShaders() {
         const std::wstring shaderDirectory = GetExecutableDirectory();
-        vertexShader_ = ReadBinaryFile(shaderDirectory + L"\\cube_vs.cso");
-        pixelShader_ = ReadBinaryFile(shaderDirectory + L"\\cube_ps.cso");
+        lineVertexShader_ = ReadBinaryFile(shaderDirectory + L"\\cube_vs.cso");
+        linePixelShader_ = ReadBinaryFile(shaderDirectory + L"\\cube_ps.cso");
+        ribbonVertexShader_ = ReadBinaryFile(shaderDirectory + L"\\ribbon_vs.cso");
+        ribbonPixelShader_ = ReadBinaryFile(shaderDirectory + L"\\ribbon_ps.cso");
 
-        if (vertexShader_.empty() || pixelShader_.empty()) {
+        if (lineVertexShader_.empty() ||
+            linePixelShader_.empty() ||
+            ribbonVertexShader_.empty() ||
+            ribbonPixelShader_.empty()) {
             FatalError("Failed to load precompiled shaders. Re-run CMake configure to regenerate the .cso files.");
         }
     }
 
-    void CreatePipelineState() {
+    void CreatePipelineStates() {
+        CreateLinePipelineState();
+        CreateRibbonPipelineState();
+    }
+
+    void CreateLinePipelineState() {
         static constexpr D3D12_INPUT_ELEMENT_DESC inputElements[] = {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
             {"COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         };
 
-        D3D12_BLEND_DESC blendDesc = {};
-        blendDesc.RenderTarget[0].BlendEnable = FALSE;
-        blendDesc.RenderTarget[0].LogicOpEnable = FALSE;
-        blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
-        blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
-        blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-        blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-        blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
-        blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        blendDesc.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
-        blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-        D3D12_DEPTH_STENCIL_DESC depthStencilDesc = {};
-        depthStencilDesc.DepthEnable = TRUE;
-        depthStencilDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        depthStencilDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-
-        D3D12_RASTERIZER_DESC rasterizerDesc = {};
-        rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
-        rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
-        rasterizerDesc.FrontCounterClockwise = FALSE;
-        rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-        rasterizerDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-        rasterizerDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-        rasterizerDesc.DepthClipEnable = TRUE;
-
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = {inputElements, _countof(inputElements)};
         psoDesc.pRootSignature = rootSignature_.Get();
-        psoDesc.VS = {vertexShader_.data(), vertexShader_.size()};
-        psoDesc.PS = {pixelShader_.data(), pixelShader_.size()};
-        psoDesc.RasterizerState = rasterizerDesc;
-        psoDesc.BlendState = blendDesc;
-        psoDesc.DepthStencilState = depthStencilDesc;
+        psoDesc.VS = {lineVertexShader_.data(), lineVertexShader_.size()};
+        psoDesc.PS = {linePixelShader_.data(), linePixelShader_.size()};
+        psoDesc.RasterizerState = DefaultRasterizerDesc();
+        psoDesc.BlendState = OpaqueBlendDesc();
+        psoDesc.DepthStencilState = DepthStencilDesc(D3D12_DEPTH_WRITE_MASK_ZERO);
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
         psoDesc.NumRenderTargets = 1;
@@ -708,6 +807,32 @@ private:
         ThrowIfFailed(
             device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&linePipelineState_)),
             "Failed to create the debug line graphics pipeline state.");
+    }
+
+    void CreateRibbonPipelineState() {
+        static constexpr D3D12_INPUT_ELEMENT_DESC inputElements[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = {inputElements, _countof(inputElements)};
+        psoDesc.pRootSignature = rootSignature_.Get();
+        psoDesc.VS = {ribbonVertexShader_.data(), ribbonVertexShader_.size()};
+        psoDesc.PS = {ribbonPixelShader_.data(), ribbonPixelShader_.size()};
+        psoDesc.RasterizerState = DefaultRasterizerDesc();
+        psoDesc.BlendState = OpaqueBlendDesc();
+        psoDesc.DepthStencilState = DepthStencilDesc(D3D12_DEPTH_WRITE_MASK_ALL);
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        psoDesc.SampleDesc.Count = 1;
+
+        ThrowIfFailed(
+            device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&ribbonPipelineState_)),
+            "Failed to create the ribbon graphics pipeline state.");
     }
 
     void CreateCommandList() {
@@ -729,7 +854,13 @@ private:
             FatalError(PolylineCurveValidationErrorMessage(*error));
         }
 
-        subdividedCurve_ = SubdividePolylineCurveTowardsBezierLimit(originalCurve_);
+        const DirectX::XMFLOAT3 tr = {3.75f, 0.0f, 0.0f};
+        sRoughCurve_ = TranslateCurve(MakeReferenceSCurve(), tr.x, tr.y, tr.z);
+        if (const auto error = ValidatePolylineCurve(sRoughCurve_)) {
+            FatalError(PolylineCurveValidationErrorMessage(*error));
+        }
+
+        subdividedCurve_ = SubdividePolylineCurveTowardsBezierLimit(sRoughCurve_);
         if (const auto error = ValidatePolylineCurve(subdividedCurve_)) {
             FatalError(PolylineCurveValidationErrorMessage(*error));
         }
@@ -750,18 +881,34 @@ private:
             0.14f,
             0.03f,
         };
+        const DirectX::XMFLOAT3 tangentColor = {1.00f, 0.18f, 0.48f};
+
+        std::vector<DirectX::XMFLOAT3> subdividedTangents;
+        if (const auto issue = ComputeRibbonCurveTangents(subdividedCurve_, kRibbonTangentMode, subdividedTangents)) {
+            const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
+            FatalError(errorMessage.c_str());
+        }
 
         std::vector<DebugVertex> lineVertices;
         gridRange_ = BuildGroundGrid(lineVertices);
+        sRoughCurveRange_ = BuildCurveSegments(sRoughCurve_, originalStyle, lineVertices);
         originalCurveRange_ = BuildCurveSegments(originalCurve_, originalStyle, lineVertices);
         subdividedCurveRange_ = BuildCurveSegments(subdividedCurve_, subdividedStyle, lineVertices);
         originalControlPointRange_ = BuildControlPointMarkers(originalCurve_, originalStyle, lineVertices);
         subdividedControlPointRange_ = BuildControlPointMarkers(subdividedCurve_, subdividedStyle, lineVertices);
+        subdividedTangentRange_ = BuildTangentSegments(
+            subdividedCurve_,
+            subdividedTangents,
+            kTangentDebugYOffset,
+            kTangentDebugLength,
+            tangentColor,
+            lineVertices);
 
         if (originalCurveRange_.vertexCount == 0 ||
             subdividedCurveRange_.vertexCount == 0 ||
             originalControlPointRange_.vertexCount == 0 ||
-            subdividedControlPointRange_.vertexCount == 0) {
+            subdividedControlPointRange_.vertexCount == 0 ||
+            subdividedTangentRange_.vertexCount == 0) {
             FatalError("Failed to build the debug geometry for the original and subdivided curves.");
         }
 
@@ -770,21 +917,62 @@ private:
             lineVertexBuffer_,
             lineVertexBufferView_,
             "Failed to create the debug line vertex buffer.");
+
+        RibbonMeshData originalRibbonMesh;
+        if (const auto issue = BuildFlatRibbonMesh(
+                originalCurve_,
+                kRibbonHalfWidth,
+                kRibbonYOffset,
+                originalRibbonMesh,
+                kRibbonTangentMode)) {
+            const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
+            FatalError(errorMessage.c_str());
+        }
+
+        RibbonMeshData subdividedRibbonMesh;
+        if (const auto issue = BuildFlatRibbonMesh(
+                subdividedCurve_,
+                kRibbonHalfWidth,
+                kRibbonYOffset,
+                subdividedRibbonMesh,
+                kRibbonTangentMode)) {
+            const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
+            FatalError(errorMessage.c_str());
+        }
+
+        RibbonMeshData ribbonMesh;
+        AppendRibbonMesh(originalRibbonMesh, ribbonMesh);
+        AppendRibbonMesh(subdividedRibbonMesh, ribbonMesh);
+
+        if (ribbonMesh.vertices.empty() || ribbonMesh.indices.empty()) {
+            FatalError("Failed to build the ribbon meshes from the original and subdivided curves.");
+        }
+
+        CreateStaticVertexBuffer(
+            ribbonMesh.vertices,
+            ribbonVertexBuffer_,
+            ribbonVertexBufferView_,
+            "Failed to create the ribbon vertex buffer.");
+        CreateStaticIndexBuffer(
+            ribbonMesh.indices,
+            ribbonIndexBuffer_,
+            ribbonIndexBufferView_,
+            "Failed to create the ribbon index buffer.");
+        ribbonIndexCount_ = static_cast<UINT>(ribbonMesh.indices.size());
     }
 
-    void CreateStaticVertexBuffer(
-        const std::vector<DebugVertex>& vertices,
+    void CreateStaticBuffer(
+        const void* sourceData,
+        UINT bufferSize,
         ComPtr<ID3D12Resource>& buffer,
-        D3D12_VERTEX_BUFFER_VIEW& view,
         const char* errorMessage) {
-        if (vertices.empty()) {
-            FatalError("Cannot create a GPU buffer for an empty vertex array.");
+        if (sourceData == nullptr || bufferSize == 0) {
+            FatalError("Cannot create a GPU buffer from empty source data.");
         }
 
         D3D12_HEAP_PROPERTIES heapProps = {};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 
-        const UINT bufferSize = static_cast<UINT>(sizeof(DebugVertex) * vertices.size());
         const D3D12_RESOURCE_DESC desc = BufferDesc(bufferSize);
         ThrowIfFailed(
             device_->CreateCommittedResource(
@@ -799,11 +987,42 @@ private:
         void* mappedData = nullptr;
         D3D12_RANGE readRange = {0, 0};
         ThrowIfFailed(buffer->Map(0, &readRange, &mappedData), "Failed to map an upload buffer.");
-        std::memcpy(mappedData, vertices.data(), bufferSize);
+        std::memcpy(mappedData, sourceData, bufferSize);
         buffer->Unmap(0, nullptr);
+    }
+
+    template <typename VertexType>
+    void CreateStaticVertexBuffer(
+        const std::vector<VertexType>& vertices,
+        ComPtr<ID3D12Resource>& buffer,
+        D3D12_VERTEX_BUFFER_VIEW& view,
+        const char* errorMessage) {
+        if (vertices.empty()) {
+            FatalError("Cannot create a GPU buffer for an empty vertex array.");
+        }
+
+        const UINT bufferSize = static_cast<UINT>(sizeof(VertexType) * vertices.size());
+        CreateStaticBuffer(vertices.data(), bufferSize, buffer, errorMessage);
 
         view.BufferLocation = buffer->GetGPUVirtualAddress();
-        view.StrideInBytes = sizeof(DebugVertex);
+        view.StrideInBytes = sizeof(VertexType);
+        view.SizeInBytes = bufferSize;
+    }
+
+    void CreateStaticIndexBuffer(
+        const std::vector<std::uint32_t>& indices,
+        ComPtr<ID3D12Resource>& buffer,
+        D3D12_INDEX_BUFFER_VIEW& view,
+        const char* errorMessage) {
+        if (indices.empty()) {
+            FatalError("Cannot create a GPU buffer for an empty index array.");
+        }
+
+        const UINT bufferSize = static_cast<UINT>(sizeof(std::uint32_t) * indices.size());
+        CreateStaticBuffer(indices.data(), bufferSize, buffer, errorMessage);
+
+        view.BufferLocation = buffer->GetGPUVirtualAddress();
+        view.Format = DXGI_FORMAT_R32_UINT;
         view.SizeInBytes = bufferSize;
     }
 
@@ -924,13 +1143,28 @@ private:
             constantBuffer_->GetGPUVirtualAddress() + static_cast<UINT64>(frameIndex_) * constantBufferStride_;
 
         commandList_->SetGraphicsRootConstantBufferView(0, cbAddress);
+        if (showRibbon_ && ribbonIndexCount_ > 0) {
+            commandList_->SetPipelineState(ribbonPipelineState_.Get());
+            commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            commandList_->IASetVertexBuffers(0, 1, &ribbonVertexBufferView_);
+            commandList_->IASetIndexBuffer(&ribbonIndexBufferView_);
+            commandList_->DrawIndexedInstanced(ribbonIndexCount_, 1, 0, 0, 0);
+        }
+
+        commandList_->SetPipelineState(linePipelineState_.Get());
         commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
         commandList_->IASetVertexBuffers(0, 1, &lineVertexBufferView_);
         commandList_->DrawInstanced(gridRange_.vertexCount, 1, gridRange_.startVertex, 0);
-        commandList_->DrawInstanced(originalCurveRange_.vertexCount, 1, originalCurveRange_.startVertex, 0);
-        commandList_->DrawInstanced(subdividedCurveRange_.vertexCount, 1, subdividedCurveRange_.startVertex, 0);
-        commandList_->DrawInstanced(originalControlPointRange_.vertexCount, 1, originalControlPointRange_.startVertex, 0);
-        commandList_->DrawInstanced(subdividedControlPointRange_.vertexCount, 1, subdividedControlPointRange_.startVertex, 0);
+        if (showOriginalCurve_) {
+            commandList_->DrawInstanced(originalCurveRange_.vertexCount, 1, originalCurveRange_.startVertex, 0);
+            commandList_->DrawInstanced(sRoughCurveRange_.vertexCount, 1, sRoughCurveRange_.startVertex, 0);
+            commandList_->DrawInstanced(originalControlPointRange_.vertexCount, 1, originalControlPointRange_.startVertex, 0);
+        }
+        if (showSubdividedCurve_) {
+            commandList_->DrawInstanced(subdividedCurveRange_.vertexCount, 1, subdividedCurveRange_.startVertex, 0);
+            commandList_->DrawInstanced(subdividedControlPointRange_.vertexCount, 1, subdividedControlPointRange_.startVertex, 0);
+            commandList_->DrawInstanced(subdividedTangentRange_.vertexCount, 1, subdividedTangentRange_.startVertex, 0);
+        }
 
         const D3D12_RESOURCE_BARRIER toPresent = TransitionBarrier(
             renderTargets_[frameIndex_].Get(),
@@ -1013,31 +1247,45 @@ private:
     ComPtr<ID3D12Resource> depthBuffer_;
     ComPtr<ID3D12RootSignature> rootSignature_;
     ComPtr<ID3D12PipelineState> linePipelineState_;
-    std::vector<std::uint8_t> vertexShader_;
-    std::vector<std::uint8_t> pixelShader_;
+    ComPtr<ID3D12PipelineState> ribbonPipelineState_;
+    std::vector<std::uint8_t> lineVertexShader_;
+    std::vector<std::uint8_t> linePixelShader_;
+    std::vector<std::uint8_t> ribbonVertexShader_;
+    std::vector<std::uint8_t> ribbonPixelShader_;
 
     ComPtr<ID3D12Resource> lineVertexBuffer_;
+    ComPtr<ID3D12Resource> ribbonVertexBuffer_;
+    ComPtr<ID3D12Resource> ribbonIndexBuffer_;
     ComPtr<ID3D12Resource> constantBuffer_;
 
     PolylineCurve originalCurve_;
+    PolylineCurve sRoughCurve_;
     PolylineCurve subdividedCurve_;
     DrawRange gridRange_ = {};
     DrawRange originalCurveRange_ = {};
+    DrawRange sRoughCurveRange_ = {};
     DrawRange subdividedCurveRange_ = {};
     DrawRange originalControlPointRange_ = {};
     DrawRange subdividedControlPointRange_ = {};
+    DrawRange subdividedTangentRange_ = {};
 
     D3D12_VIEWPORT viewport_ = {};
     D3D12_RECT scissorRect_ = {};
     D3D12_VERTEX_BUFFER_VIEW lineVertexBufferView_ = {};
+    D3D12_VERTEX_BUFFER_VIEW ribbonVertexBufferView_ = {};
+    D3D12_INDEX_BUFFER_VIEW ribbonIndexBufferView_ = {};
 
     UINT rtvDescriptorSize_ = 0;
     UINT frameIndex_ = 0;
     UINT constantBufferStride_ = 0;
+    UINT ribbonIndexCount_ = 0;
     UINT64 fenceValues_[kFrameCount] = {};
     HANDLE fenceEvent_ = nullptr;
     std::uint8_t* constantBufferDataBegin_ = nullptr;
     OrbitCamera camera_{};
+    bool showOriginalCurve_ = true;
+    bool showSubdividedCurve_ = true;
+    bool showRibbon_ = true;
     bool orbitingCamera_ = false;
     int lastMouseX_ = 0;
     int lastMouseY_ = 0;
