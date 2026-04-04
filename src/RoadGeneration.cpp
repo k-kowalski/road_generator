@@ -6,8 +6,12 @@
 
 namespace {
 
+constexpr float kCenterPatchIntersectionInfluence = 0.25f;
+
 struct BoundaryRef {
     std::uint32_t vertexIndex = 0;
+    std::size_t branchIndex = 0;
+    DirectX::XMFLOAT3 position = {};
     float angle = 0.0f;
 };
 
@@ -20,6 +24,19 @@ float DistanceSquared(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT3& ri
 
 float BoundaryAngle(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& point) {
     return std::atan2(point.z - center.z, point.x - center.x);
+}
+
+DirectX::XMFLOAT3 SmoothTowardIntersection(
+    const DirectX::XMFLOAT3& left,
+    const DirectX::XMFLOAT3& center,
+    const DirectX::XMFLOAT3& right,
+    float centerInfluence) {
+    const float sideInfluence = 0.5f * (1.0f - centerInfluence);
+    return {
+        sideInfluence * left.x + centerInfluence * center.x + sideInfluence * right.x,
+        sideInfluence * left.y + centerInfluence * center.y + sideInfluence * right.y,
+        sideInfluence * left.z + centerInfluence * center.z + sideInfluence * right.z,
+    };
 }
 
 std::uint32_t AppendRibbonMesh(const RibbonMeshData& source, RibbonMeshData& destination) {
@@ -35,6 +52,7 @@ std::uint32_t AppendRibbonMesh(const RibbonMeshData& source, RibbonMeshData& des
 }
 
 void CollectBranchBoundary(
+    std::size_t branchIndex,
     const TrimmedCurveBranch& trimmedBranch,
     const RibbonMeshData& trimmedRibbonMesh,
     std::uint32_t vertexOffset,
@@ -57,6 +75,8 @@ void CollectBranchBoundary(
         const DirectX::XMFLOAT3& position = trimmedRibbonMesh.vertices[localIndex].position;
         boundaryRefs.push_back({
             vertexOffset + localIndex,
+            branchIndex,
+            position,
             BoundaryAngle(intersectionPoint, position),
         });
     }
@@ -86,10 +106,36 @@ void AppendCenterPatch(
     centerVertex.color = kRibbonWireframeColor;
     ribbonMesh.vertices.push_back(centerVertex);
 
-    ribbonMesh.indices.reserve(ribbonMesh.indices.size() + sortedBoundaryRefs.size() * 3);
+    std::vector<std::uint32_t> patchRingIndices;
+    patchRingIndices.reserve(sortedBoundaryRefs.size() * 2);
+
     for (std::size_t i = 0; i < sortedBoundaryRefs.size(); ++i) {
-        const std::uint32_t current = sortedBoundaryRefs[i].vertexIndex;
-        const std::uint32_t next = sortedBoundaryRefs[(i + 1) % sortedBoundaryRefs.size()].vertexIndex;
+        const BoundaryRef& current = sortedBoundaryRefs[i];
+        const BoundaryRef& next = sortedBoundaryRefs[(i + 1) % sortedBoundaryRefs.size()];
+        patchRingIndices.push_back(current.vertexIndex);
+
+        if (current.branchIndex == next.branchIndex) {
+            continue;
+        }
+
+        RibbonVertex insertedVertex = {};
+        insertedVertex.position = SmoothTowardIntersection(
+            current.position,
+            intersectionPoint,
+            next.position,
+            kCenterPatchIntersectionInfluence);
+        insertedVertex.uv = {0.5f, 0.5f};
+        insertedVertex.color = kRibbonWireframeColor;
+
+        const std::uint32_t insertedVertexIndex = static_cast<std::uint32_t>(ribbonMesh.vertices.size());
+        ribbonMesh.vertices.push_back(insertedVertex);
+        patchRingIndices.push_back(insertedVertexIndex);
+    }
+
+    ribbonMesh.indices.reserve(ribbonMesh.indices.size() + patchRingIndices.size() * 3);
+    for (std::size_t i = 0; i < patchRingIndices.size(); ++i) {
+        const std::uint32_t current = patchRingIndices[i];
+        const std::uint32_t next = patchRingIndices[(i + 1) % patchRingIndices.size()];
         ribbonMesh.indices.push_back(centerVertexIndex);
         ribbonMesh.indices.push_back(current);
         ribbonMesh.indices.push_back(next);
@@ -207,6 +253,7 @@ std::optional<GenerateRoadIssue> GenerateRoad(
 
         const std::uint32_t vertexOffset = AppendRibbonMesh(trimmedRibbonMesh, road.ribbonMesh);
         CollectBranchBoundary(
+            i,
             trimmedBranch,
             trimmedRibbonMesh,
             vertexOffset,

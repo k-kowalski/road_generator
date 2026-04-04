@@ -33,7 +33,6 @@ constexpr float kRibbonHalfWidth = 0.20f;
 constexpr RibbonTangentMode kRibbonTangentMode = RibbonTangentMode::AverageSegmentDirections;
 constexpr float kTangentDebugYOffset = 0.14f;
 constexpr float kTangentDebugLength = 0.28f;
-
 struct OrbitCamera {
     float yaw = DirectX::XM_PI;
     float pitch = 0.48f;
@@ -64,12 +63,25 @@ struct CurveDebugStyle {
     float crownHalfSpan = 0.05f;
 };
 
+struct ProcessedCurveData {
+    std::size_t authoredIndex = 0;
+    PolylineCurve curve;
+    std::vector<DirectX::XMFLOAT3> tangents;
+};
+
 UINT AlignTo(UINT value, UINT alignment) {
     return (value + alignment - 1U) & ~(alignment - 1U);
 }
 
 float ClampFloat(float value, float minValue, float maxValue) {
     return std::clamp(value, minValue, maxValue);
+}
+
+float DistanceSquared(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT3& right) {
+    const float dx = left.x - right.x;
+    const float dy = left.y - right.y;
+    const float dz = left.z - right.z;
+    return dx * dx + dy * dy + dz * dz;
 }
 
 D3D12_BLEND_DESC OpaqueBlendDesc() {
@@ -192,59 +204,24 @@ DirectX::XMFLOAT3 LiftPoint(const DirectX::XMFLOAT3& point, float yOffset) {
     return OffsetPoint(point, 0.0f, yOffset, 0.0f);
 }
 
-PolylineCurve MakeReferenceSCurve() {
-    PolylineCurve curve;
-    curve.controlPoints = {
-        {-1.25f, 0.0f, -0.90f},
-        {-0.55f, 0.0f, -0.10f},
-        {0.00f, 0.0f, 0.70f},
-        {0.65f, 0.0f, -0.15f},
-        {1.25f, 0.0f, 0.85f},
+CurveDebugStyle RoughCurveStyle(std::size_t curveIndex) {
+    static constexpr CurveDebugStyle kStyles[] = {
+        {{0.95f, 0.56f, 0.21f}, {1.00f, 0.76f, 0.46f}, 0.02f, 0.09f, 0.20f, 0.06f},
+        {{0.18f, 0.84f, 0.90f}, {0.72f, 0.98f, 1.00f}, 0.02f, 0.06f, 0.14f, 0.03f},
+        {{0.44f, 0.82f, 0.28f}, {0.73f, 0.96f, 0.62f}, 0.02f, 0.07f, 0.17f, 0.05f},
+        {{0.96f, 0.34f, 0.58f}, {1.00f, 0.70f, 0.82f}, 0.02f, 0.07f, 0.17f, 0.05f},
     };
-    return curve;
+    return kStyles[curveIndex % _countof(kStyles)];
 }
 
-PolylineCurve TranslateCurve(const PolylineCurve& curve, float dx, float dy, float dz) {
-    PolylineCurve translatedCurve;
-    translatedCurve.controlPoints.reserve(curve.controlPoints.size());
-
-    for (const DirectX::XMFLOAT3& point : curve.controlPoints) {
-        translatedCurve.controlPoints.push_back(OffsetPoint(point, dx, dy, dz));
-    }
-
-    return translatedCurve;
-}
-
-PolylineCurve MakeRoadSpine1Curve() {
-    PolylineCurve curve;
-    curve.controlPoints = {
-        {-2.80f, 0.0f, -0.95f},
-        {-2.10f, 0.0f, -1.05f},
-        {-1.40f, 0.0f, -0.82f},
-        {-0.70f, 0.0f, -0.38f},
-        {0.00f, 0.0f, 0.00f},
-        {0.70f, 0.0f, 0.36f},
-        {1.40f, 0.0f, 0.80f},
-        {2.10f, 0.0f, 1.05f},
-        {2.80f, 0.0f, 0.96f},
+CurveDebugStyle SubdividedCurveStyle(std::size_t curveIndex) {
+    static constexpr CurveDebugStyle kStyles[] = {
+        {{1.00f, 0.78f, 0.42f}, {1.00f, 0.88f, 0.64f}, 0.08f, 0.06f, 0.14f, 0.03f},
+        {{0.46f, 0.92f, 0.98f}, {0.78f, 1.00f, 1.00f}, 0.08f, 0.06f, 0.14f, 0.03f},
+        {{0.66f, 0.92f, 0.46f}, {0.84f, 1.00f, 0.72f}, 0.08f, 0.06f, 0.14f, 0.03f},
+        {{1.00f, 0.56f, 0.76f}, {1.00f, 0.80f, 0.90f}, 0.08f, 0.06f, 0.14f, 0.03f},
     };
-    return curve;
-}
-
-PolylineCurve MakeRoadSpine2Curve() {
-    PolylineCurve curve;
-    curve.controlPoints = {
-        {-0.95f, 0.0f, -2.80f},
-        {-1.05f, 0.0f, -2.10f},
-        {-0.80f, 0.0f, -1.40f},
-        {-0.34f, 0.0f, -0.70f},
-        {0.00f, 0.0f, 0.00f},
-        {0.36f, 0.0f, 0.70f},
-        {0.82f, 0.0f, 1.40f},
-        {1.05f, 0.0f, 2.10f},
-        {0.96f, 0.0f, 2.80f},
-    };
-    return curve;
+    return kStyles[curveIndex % _countof(kStyles)];
 }
 
 void AppendLine(
@@ -380,6 +357,14 @@ private:
         camera_ = OrbitCamera{};
     }
 
+    DirectX::XMMATRIX ProjectionMatrix() const {
+        return DirectX::XMMatrixPerspectiveFovLH(
+            DirectX::XMConvertToRadians(60.0f),
+            static_cast<float>(width_) / static_cast<float>(height_),
+            0.1f,
+            100.0f);
+    }
+
     DirectX::XMMATRIX CameraViewMatrix() const {
         const float cosPitch = std::cos(camera_.pitch);
         const float sinPitch = std::sin(camera_.pitch);
@@ -396,6 +381,94 @@ private:
             DirectX::XMVectorSet(eye.x, eye.y, eye.z, 1.0f),
             DirectX::XMVectorSet(camera_.target.x, camera_.target.y, camera_.target.z, 1.0f),
             DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+    }
+
+    bool ScreenPointToGroundPlane(int screenX, int screenY, DirectX::XMFLOAT3& groundPoint) const {
+        const DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
+        const DirectX::XMMATRIX view = CameraViewMatrix();
+        const DirectX::XMMATRIX projection = ProjectionMatrix();
+
+        const DirectX::XMVECTOR nearPoint = DirectX::XMVector3Unproject(
+            DirectX::XMVectorSet(static_cast<float>(screenX), static_cast<float>(screenY), 0.0f, 1.0f),
+            0.0f,
+            0.0f,
+            static_cast<float>(width_),
+            static_cast<float>(height_),
+            0.0f,
+            1.0f,
+            projection,
+            view,
+            world);
+        const DirectX::XMVECTOR farPoint = DirectX::XMVector3Unproject(
+            DirectX::XMVectorSet(static_cast<float>(screenX), static_cast<float>(screenY), 1.0f, 1.0f),
+            0.0f,
+            0.0f,
+            static_cast<float>(width_),
+            static_cast<float>(height_),
+            0.0f,
+            1.0f,
+            projection,
+            view,
+            world);
+
+        DirectX::XMFLOAT3 nearValue = {};
+        DirectX::XMFLOAT3 farValue = {};
+        DirectX::XMStoreFloat3(&nearValue, nearPoint);
+        DirectX::XMStoreFloat3(&farValue, farPoint);
+
+        const float rayY = farValue.y - nearValue.y;
+        if (std::fabs(rayY) <= 1.0e-6f) {
+            return false;
+        }
+
+        const float t = -nearValue.y / rayY;
+        if (t < 0.0f) {
+            return false;
+        }
+
+        groundPoint = {
+            nearValue.x + (farValue.x - nearValue.x) * t,
+            0.0f,
+            nearValue.z + (farValue.z - nearValue.z) * t,
+        };
+        return std::isfinite(groundPoint.x) && std::isfinite(groundPoint.z);
+    }
+
+    void RebuildSceneGeometryBuffers() {
+        if (device_ == nullptr) {
+            return;
+        }
+
+        if (commandQueue_ != nullptr && fence_ != nullptr && fenceEvent_ != nullptr) {
+            WaitForGpu();
+        }
+
+        CreateSceneGeometryBuffers();
+    }
+
+    void AppendControlPointToCurrentCurve(const DirectX::XMFLOAT3& point) {
+        if (!currentCurveActive_) {
+            authoredCurves_.push_back({});
+            currentCurveActive_ = true;
+        }
+
+        PolylineCurve& currentCurve = authoredCurves_.back();
+        if (!currentCurve.controlPoints.empty() &&
+            DistanceSquared(currentCurve.controlPoints.back(), point) <= 1.0e-6f) {
+            return;
+        }
+
+        currentCurve.controlPoints.push_back(point);
+        RebuildSceneGeometryBuffers();
+    }
+
+    void FinishCurrentCurve() {
+        if (!currentCurveActive_) {
+            return;
+        }
+
+        currentCurveActive_ = false;
+        RebuildSceneGeometryBuffers();
     }
 
     void UpdateCamera(float deltaSeconds) {
@@ -451,6 +524,13 @@ private:
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
+        case WM_LBUTTONDOWN: {
+            DirectX::XMFLOAT3 groundPoint = {};
+            if (ScreenPointToGroundPlane(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), groundPoint)) {
+                AppendControlPointToCurrentCurve(groundPoint);
+            }
+            return 0;
+        }
         case WM_KEYDOWN:
             if ((lParam & 0x40000000) == 0) {
                 switch (wParam) {
@@ -468,6 +548,9 @@ private:
                     return 0;
                 case '4':
                     showRibbonWireframe_ = !showRibbonWireframe_;
+                    return 0;
+                case VK_RETURN:
+                    FinishCurrentCurve();
                     return 0;
                 default:
                     break;
@@ -887,132 +970,78 @@ private:
     }
 
     void CreateSceneGeometryBuffers() {
-        const PolylineCurve referenceUCurve = TranslateCurve(MakeDefaultPolylineCurve(), -4.40f, 0.0f, 0.0f);
-        if (const auto error = ValidatePolylineCurve(referenceUCurve)) {
-            FatalError(PolylineCurveValidationErrorMessage(*error));
-        }
-
-        const PolylineCurve referenceSCurve = TranslateCurve(MakeReferenceSCurve(), 4.40f, 0.0f, 0.0f);
-        if (const auto error = ValidatePolylineCurve(referenceSCurve)) {
-            FatalError(PolylineCurveValidationErrorMessage(*error));
-        }
-
-        const PolylineCurve referenceSubdividedSCurve = SubdividePolylineCurveTowardsBezierLimit(referenceSCurve);
-        if (const auto error = ValidatePolylineCurve(referenceSubdividedSCurve)) {
-            FatalError(PolylineCurveValidationErrorMessage(*error));
-        }
-
-        const PolylineCurve roadSpine1 = MakeRoadSpine1Curve();
-        if (const auto error = ValidatePolylineCurve(roadSpine1)) {
-            FatalError(PolylineCurveValidationErrorMessage(*error));
-        }
-
-        const PolylineCurve roadSpine2 = MakeRoadSpine2Curve();
-        if (const auto error = ValidatePolylineCurve(roadSpine2)) {
-            FatalError(PolylineCurveValidationErrorMessage(*error));
-        }
-
-        const CurveDebugStyle referenceStyle = {
-            {0.46f, 0.43f, 0.38f},
-            {0.65f, 0.60f, 0.54f},
-            0.02f,
-            0.09f,
-            0.20f,
-            0.06f,
-        };
-        const CurveDebugStyle referenceSubdividedStyle = {
-            {0.32f, 0.49f, 0.54f},
-            {0.44f, 0.67f, 0.74f},
-            0.06f,
-            0.06f,
-            0.14f,
-            0.03f,
-        };
-        const CurveDebugStyle roadSpine1Style = {
-            {0.95f, 0.56f, 0.21f},
-            {1.00f, 0.76f, 0.46f},
-            0.02f,
-            0.09f,
-            0.20f,
-            0.06f,
-        };
-        const CurveDebugStyle roadSpine2Style = {
-            {0.18f, 0.84f, 0.90f},
-            {0.72f, 0.98f, 1.00f},
-            0.09f,
-            0.06f,
-            0.14f,
-            0.03f,
-        };
+        constexpr float kRoadCleanupRadius = 0.9f;
         const DirectX::XMFLOAT3 tangentColor = {1.00f, 0.18f, 0.48f};
+        roughCurveRange_ = {};
+        roughControlPointRange_ = {};
+        subdividedCurveRange_ = {};
+        subdividedTangentRange_ = {};
+        ribbonVertexBuffer_.Reset();
+        ribbonIndexBuffer_.Reset();
+        ribbonVertexBufferView_ = {};
+        ribbonIndexBufferView_ = {};
+        ribbonIndexCount_ = 0;
 
-        std::vector<DirectX::XMFLOAT3> roadSpine1Tangents;
-        if (const auto issue = ComputeCurveTangents(roadSpine1, kRibbonTangentMode, roadSpine1Tangents)) {
-            const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
-            FatalError(errorMessage.c_str());
-        }
+        std::vector<ProcessedCurveData> processedCurves;
+        processedCurves.reserve(authoredCurves_.size());
+        for (std::size_t curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
+            const PolylineCurve& roughCurve = authoredCurves_[curveIndex];
+            if (const auto error = ValidatePolylineCurve(roughCurve)) {
+                continue;
+            }
 
-        std::vector<DirectX::XMFLOAT3> roadSpine2Tangents;
-        if (const auto issue = ComputeCurveTangents(roadSpine2, kRibbonTangentMode, roadSpine2Tangents)) {
-            const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
-            FatalError(errorMessage.c_str());
-        }
+            ProcessedCurveData processedCurve = {};
+            processedCurve.authoredIndex = curveIndex;
+            processedCurve.curve = SubdividePolylineCurveTowardsBezierLimit(roughCurve);
+            if (const auto error = ValidatePolylineCurve(processedCurve.curve)) {
+                continue;
+            }
 
-        GenerateRoadResult generatedRoad = {};
-        if (const auto issue = GenerateRoad(
-                roadSpine1,
-                roadSpine2,
-                0.9f,
-                kRibbonHalfWidth,
-                generatedRoad,
-                kRibbonTangentMode)) {
-            const std::string errorMessage = GenerateRoadErrorMessage(*issue);
-            FatalError(errorMessage.c_str());
+            if (const auto issue = ComputeCurveTangents(
+                    processedCurve.curve,
+                    kRibbonTangentMode,
+                    processedCurve.tangents)) {
+                continue;
+            }
+
+            processedCurves.push_back(std::move(processedCurve));
         }
 
         std::vector<DebugVertex> lineVertices;
         gridRange_ = BuildGroundGrid(lineVertices);
-        referenceCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
-        BuildCurveSegments(referenceUCurve, referenceStyle, lineVertices);
-        BuildCurveSegments(referenceSCurve, referenceStyle, lineVertices);
-        BuildCurveSegments(referenceSubdividedSCurve, referenceSubdividedStyle, lineVertices);
-        referenceCurveRange_.vertexCount = static_cast<UINT>(lineVertices.size()) - referenceCurveRange_.startVertex;
-
-        roadSpineCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
-        BuildCurveSegments(roadSpine1, roadSpine1Style, lineVertices);
-        BuildCurveSegments(roadSpine2, roadSpine2Style, lineVertices);
-        roadSpineCurveRange_.vertexCount = static_cast<UINT>(lineVertices.size()) - roadSpineCurveRange_.startVertex;
-
-        roadSpineControlPointRange_.startVertex = static_cast<UINT>(lineVertices.size());
-        BuildControlPointMarkers(roadSpine1, roadSpine1Style, lineVertices);
-        BuildControlPointMarkers(roadSpine2, roadSpine2Style, lineVertices);
-        roadSpineControlPointRange_.vertexCount =
-            static_cast<UINT>(lineVertices.size()) - roadSpineControlPointRange_.startVertex;
-
-        roadSpineTangentRange_.startVertex = static_cast<UINT>(lineVertices.size());
-        BuildTangentSegments(
-            roadSpine1,
-            roadSpine1Tangents,
-            kTangentDebugYOffset,
-            kTangentDebugLength,
-            tangentColor,
-            lineVertices);
-        BuildTangentSegments(
-            roadSpine2,
-            roadSpine2Tangents,
-            kTangentDebugYOffset,
-            kTangentDebugLength,
-            tangentColor,
-            lineVertices);
-        roadSpineTangentRange_.vertexCount =
-            static_cast<UINT>(lineVertices.size()) - roadSpineTangentRange_.startVertex;
-
-        if (referenceCurveRange_.vertexCount == 0 ||
-            roadSpineCurveRange_.vertexCount == 0 ||
-            roadSpineControlPointRange_.vertexCount == 0 ||
-            roadSpineTangentRange_.vertexCount == 0) {
-            FatalError("Failed to build the debug geometry for the reference curves or the generated road spines.");
+        roughCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        for (std::size_t curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
+            BuildCurveSegments(authoredCurves_[curveIndex], RoughCurveStyle(curveIndex), lineVertices);
         }
+        roughCurveRange_.vertexCount = static_cast<UINT>(lineVertices.size()) - roughCurveRange_.startVertex;
+
+        roughControlPointRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        for (std::size_t curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
+            BuildControlPointMarkers(authoredCurves_[curveIndex], RoughCurveStyle(curveIndex), lineVertices);
+        }
+        roughControlPointRange_.vertexCount =
+            static_cast<UINT>(lineVertices.size()) - roughControlPointRange_.startVertex;
+
+        subdividedCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        for (const ProcessedCurveData& processedCurve : processedCurves) {
+            BuildCurveSegments(processedCurve.curve, SubdividedCurveStyle(processedCurve.authoredIndex), lineVertices);
+        }
+        subdividedCurveRange_.vertexCount =
+            static_cast<UINT>(lineVertices.size()) - subdividedCurveRange_.startVertex;
+
+        subdividedTangentRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        for (const ProcessedCurveData& processedCurve : processedCurves) {
+            const CurveDebugStyle style = SubdividedCurveStyle(processedCurve.authoredIndex);
+            BuildTangentSegments(
+                processedCurve.curve,
+                processedCurve.tangents,
+                style.yOffset + kTangentDebugYOffset,
+                kTangentDebugLength,
+                tangentColor,
+                lineVertices);
+        }
+        subdividedTangentRange_.vertexCount =
+            static_cast<UINT>(lineVertices.size()) - subdividedTangentRange_.startVertex;
 
         CreateStaticVertexBuffer(
             lineVertices,
@@ -1020,8 +1049,22 @@ private:
             lineVertexBufferView_,
             "Failed to create the debug line vertex buffer.");
 
-        if (generatedRoad.ribbonMesh.vertices.empty() || generatedRoad.ribbonMesh.indices.empty()) {
-            FatalError("Failed to build the generated road ribbon mesh.");
+        if (processedCurves.size() < 2) {
+            return;
+        }
+
+        GenerateRoadResult generatedRoad = {};
+        const auto issue = GenerateRoad(
+            processedCurves[processedCurves.size() - 2].curve,
+            processedCurves[processedCurves.size() - 1].curve,
+            kRoadCleanupRadius,
+            kRibbonHalfWidth,
+            generatedRoad,
+            kRibbonTangentMode);
+        if (issue.has_value() ||
+            generatedRoad.ribbonMesh.vertices.empty() ||
+            generatedRoad.ribbonMesh.indices.empty()) {
+            return;
         }
 
         CreateStaticVertexBuffer(
@@ -1176,11 +1219,7 @@ private:
         UpdateCamera(deltaSeconds);
 
         const DirectX::XMMATRIX view = CameraViewMatrix();
-        const DirectX::XMMATRIX projection = DirectX::XMMatrixPerspectiveFovLH(
-            DirectX::XMConvertToRadians(60.0f),
-            static_cast<float>(width_) / static_cast<float>(height_),
-            0.1f,
-            100.0f);
+        const DirectX::XMMATRIX projection = ProjectionMatrix();
 
         SceneConstants constants = {};
         DirectX::XMStoreFloat4x4(&constants.mvp, DirectX::XMMatrixTranspose(view * projection));
@@ -1233,12 +1272,24 @@ private:
         commandList_->IASetVertexBuffers(0, 1, &lineVertexBufferView_);
         commandList_->DrawInstanced(gridRange_.vertexCount, 1, gridRange_.startVertex, 0);
         if (showOriginalCurve_) {
-            commandList_->DrawInstanced(referenceCurveRange_.vertexCount, 1, referenceCurveRange_.startVertex, 0);
+            commandList_->DrawInstanced(roughCurveRange_.vertexCount, 1, roughCurveRange_.startVertex, 0);
+            commandList_->DrawInstanced(
+                roughControlPointRange_.vertexCount,
+                1,
+                roughControlPointRange_.startVertex,
+                0);
         }
         if (showSubdividedCurve_) {
-            commandList_->DrawInstanced(roadSpineCurveRange_.vertexCount, 1, roadSpineCurveRange_.startVertex, 0);
-            commandList_->DrawInstanced(roadSpineControlPointRange_.vertexCount, 1, roadSpineControlPointRange_.startVertex, 0);
-            commandList_->DrawInstanced(roadSpineTangentRange_.vertexCount, 1, roadSpineTangentRange_.startVertex, 0);
+            commandList_->DrawInstanced(
+                subdividedCurveRange_.vertexCount,
+                1,
+                subdividedCurveRange_.startVertex,
+                0);
+            commandList_->DrawInstanced(
+                subdividedTangentRange_.vertexCount,
+                1,
+                subdividedTangentRange_.startVertex,
+                0);
         }
 
         const D3D12_RESOURCE_BARRIER toPresent = TransitionBarrier(
@@ -1335,10 +1386,10 @@ private:
     ComPtr<ID3D12Resource> constantBuffer_;
 
     DrawRange gridRange_ = {};
-    DrawRange referenceCurveRange_ = {};
-    DrawRange roadSpineCurveRange_ = {};
-    DrawRange roadSpineControlPointRange_ = {};
-    DrawRange roadSpineTangentRange_ = {};
+    DrawRange roughCurveRange_ = {};
+    DrawRange roughControlPointRange_ = {};
+    DrawRange subdividedCurveRange_ = {};
+    DrawRange subdividedTangentRange_ = {};
 
     D3D12_VIEWPORT viewport_ = {};
     D3D12_RECT scissorRect_ = {};
@@ -1354,10 +1405,12 @@ private:
     HANDLE fenceEvent_ = nullptr;
     std::uint8_t* constantBufferDataBegin_ = nullptr;
     OrbitCamera camera_{};
+    std::vector<PolylineCurve> authoredCurves_;
     bool showOriginalCurve_ = true;
     bool showSubdividedCurve_ = true;
     bool showRibbon_ = true;
     bool showRibbonWireframe_ = false;
+    bool currentCurveActive_ = false;
     bool orbitingCamera_ = false;
     int lastMouseX_ = 0;
     int lastMouseY_ = 0;
