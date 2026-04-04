@@ -7,7 +7,7 @@ namespace {
 
 struct SegmentCircleHit {
     DirectX::XMFLOAT3 position = {};
-    std::size_t segmentIndex = 0;
+    SegmentIndex segmentIndex = 0;
     float segmentT = 0.0f;
 };
 
@@ -135,7 +135,7 @@ TrimmedCurveBranch BuildTrimmedPrefix(
     TrimmedCurveBranch trimmed = {};
     trimmed.curve.controlPoints.reserve(firstHit.segmentIndex + 2);
 
-    for (std::size_t i = 0; i <= firstHit.segmentIndex; ++i) {
+    for (SegmentIndex i = 0; i <= firstHit.segmentIndex; ++i) {
         trimmed.curve.controlPoints.push_back(curve.controlPoints[i]);
     }
 
@@ -154,7 +154,7 @@ TrimmedCurveBranch BuildTrimmedSuffix(
     TrimmedCurveBranch trimmed = {};
     trimmed.curve.controlPoints.reserve(curve.controlPoints.size() - lastHit.segmentIndex);
 
-    for (std::size_t i = curve.controlPoints.size(); i-- > lastHit.segmentIndex + 1;) {
+    for (SegmentIndex i = curve.controlPoints.size(); i-- > lastHit.segmentIndex + 1;) {
         trimmed.curve.controlPoints.push_back(curve.controlPoints[i]);
     }
 
@@ -190,7 +190,7 @@ std::optional<CurveTrimResult> TrimCurvesCircle(const PolylineCurve& curve1, con
     const float trimEndpointMergeDistanceSquared =
         trimEndpointMergeDistance * trimEndpointMergeDistance;
 
-    auto intersectSegmentCircle = [&](const DirectX::XMFLOAT3& start, const DirectX::XMFLOAT3& end, std::size_t segmentIndex) {
+    auto intersectSegmentCircle = [&](const DirectX::XMFLOAT3& start, const DirectX::XMFLOAT3& end, SegmentIndex segmentIndex) {
         std::vector<SegmentCircleHit> hits;
         const Vector2f startGround = ProjectPointXZ(start);
         const Vector2f endGround = ProjectPointXZ(end);
@@ -240,7 +240,7 @@ std::optional<CurveTrimResult> TrimCurvesCircle(const PolylineCurve& curve1, con
     };
 
     std::vector<SegmentCircleHit> curve1Hits;
-    for (std::size_t i = 0; i + 1 < curve1.controlPoints.size(); ++i) {
+    for (SegmentIndex i = 0; i + 1 < curve1.controlPoints.size(); ++i) {
         const auto hits = intersectSegmentCircle(
             curve1.controlPoints[i],
             curve1.controlPoints[i + 1],
@@ -250,7 +250,7 @@ std::optional<CurveTrimResult> TrimCurvesCircle(const PolylineCurve& curve1, con
     SortAndDeduplicateHits(curve1Hits, parameterTolerance, duplicateToleranceSquared);
 
     std::vector<SegmentCircleHit> curve2Hits;
-    for (std::size_t i = 0; i + 1 < curve2.controlPoints.size(); ++i) {
+    for (SegmentIndex i = 0; i + 1 < curve2.controlPoints.size(); ++i) {
         const auto hits = intersectSegmentCircle(
             curve2.controlPoints[i],
             curve2.controlPoints[i + 1],
@@ -342,7 +342,7 @@ PolylineCurve SubdividePolylineCurveTowardsBezierLimit(const PolylineCurve& curv
     subdividedCurve.controlPoints.reserve(curve.controlPoints.size() * 2 - 1);
     subdividedCurve.controlPoints.push_back(curve.controlPoints.front());
 
-    for (std::size_t i = 1; i < curve.controlPoints.size(); ++i) {
+    for (SegmentIndex i = 1; i < curve.controlPoints.size(); ++i) {
         subdividedCurve.controlPoints.push_back(Midpoint(curve.controlPoints[i - 1], curve.controlPoints[i]));
         subdividedCurve.controlPoints.push_back(curve.controlPoints[i]);
     }
@@ -351,7 +351,7 @@ PolylineCurve SubdividePolylineCurveTowardsBezierLimit(const PolylineCurve& curv
 
     // A single 1-2-1 smoothing pass preserves the fixed ends and keeps inserted
     // edge points centered while nudging interior vertices toward the limit curve.
-    for (std::size_t i = 1; i + 1 < subdividedCurve.controlPoints.size(); ++i) {
+    for (SegmentIndex i = 1; i + 1 < subdividedCurve.controlPoints.size(); ++i) {
         smoothedCurve.controlPoints[i] = SmoothInteriorPoint(
             subdividedCurve.controlPoints[i - 1],
             subdividedCurve.controlPoints[i],
@@ -370,7 +370,7 @@ std::optional<PolylineCurveValidationError> ValidatePolylineCurve(
 
     const float duplicateToleranceSquared = groundTolerance * groundTolerance;
 
-    for (std::size_t i = 0; i < curve.controlPoints.size(); ++i) {
+    for (SegmentIndex i = 0; i < curve.controlPoints.size(); ++i) {
         const DirectX::XMFLOAT3& point = curve.controlPoints[i];
         if (std::fabs(point.y) > groundTolerance) {
             return PolylineCurveValidationError::PointOffGroundPlane;
@@ -395,8 +395,8 @@ std::vector<DirectX::XMFLOAT3> IntersectCurves(
         return points;
     }
 
-    for (std::size_t i = 0; i + 1 < curve1.controlPoints.size(); ++i) {
-        for (std::size_t j = 0; j + 1 < curve2.controlPoints.size(); ++j) {
+    for (SegmentIndex i = 0; i + 1 < curve1.controlPoints.size(); ++i) {
+        for (SegmentIndex j = 0; j + 1 < curve2.controlPoints.size(); ++j) {
             const auto intersection = IntersectSegments(
                 curve1.controlPoints[i],
                 curve1.controlPoints[i + 1],

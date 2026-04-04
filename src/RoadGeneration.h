@@ -6,35 +6,45 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "PolylineCurve.h"
 #include "RibbonMesh.h"
 
+using NodeIndex = std::size_t;
+using SpanIndex = std::size_t;
+using BoundaryGroupIndex = std::size_t;
+
 enum class GenerateRoadError : std::uint32_t {
     InvalidSpineCurve = 1,
-    NoIntersection,
-    MultipleIntersections,
-    TrimFailed,
-    CenterPatchFailed,
     RibbonBuildFailed,
     NoRibbonOutput,
 };
 
 struct GenerateRoadIssue {
     GenerateRoadError error = GenerateRoadError::InvalidSpineCurve;
-    std::size_t spineIndex = 0;
-    std::size_t intersectionCount = 0;
-    std::size_t trimmedCurveIndex = 0;
-    std::size_t boundaryPointCount = 0;
+    CurveIndex spineIndex = 0;
+    SpanIndex spanIndex = 0;
     PolylineCurveValidationError validationError = PolylineCurveValidationError::TooFewPoints;
     RibbonMeshBuildIssue ribbonIssue = {};
 };
 
+struct RoadJunctionInfo {
+    DirectX::XMFLOAT3 position = {};
+    std::size_t incidentCount = 0;
+};
+
 struct GenerateRoadResult {
-    DirectX::XMFLOAT3 intersectionPoint = {};
-    CurveTrimResult trimmedSpines = {};
+    std::vector<RoadJunctionInfo> junctions;
     RibbonMeshData ribbonMesh;
 };
+
+std::optional<GenerateRoadIssue> GenerateRoad(
+    const std::vector<PolylineCurve>& spines,
+    float cleanupRadius,
+    float ribbonHalfWidth,
+    GenerateRoadResult& road,
+    RibbonTangentMode tangentMode = RibbonTangentMode::AverageSegmentDirections);
 
 std::optional<GenerateRoadIssue> GenerateRoad(
     const PolylineCurve& firstSpine,

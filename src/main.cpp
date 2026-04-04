@@ -64,7 +64,7 @@ struct CurveDebugStyle {
 };
 
 struct ProcessedCurveData {
-    std::size_t authoredIndex = 0;
+    CurveIndex authoredIndex = 0;
     PolylineCurve curve;
     std::vector<DirectX::XMFLOAT3> tangents;
 };
@@ -204,7 +204,7 @@ DirectX::XMFLOAT3 LiftPoint(const DirectX::XMFLOAT3& point, float yOffset) {
     return OffsetPoint(point, 0.0f, yOffset, 0.0f);
 }
 
-CurveDebugStyle RoughCurveStyle(std::size_t curveIndex) {
+CurveDebugStyle RoughCurveStyle(CurveIndex curveIndex) {
     static constexpr CurveDebugStyle kStyles[] = {
         {{0.95f, 0.56f, 0.21f}, {1.00f, 0.76f, 0.46f}, 0.02f, 0.09f, 0.20f, 0.06f},
         {{0.18f, 0.84f, 0.90f}, {0.72f, 0.98f, 1.00f}, 0.02f, 0.06f, 0.14f, 0.03f},
@@ -214,7 +214,7 @@ CurveDebugStyle RoughCurveStyle(std::size_t curveIndex) {
     return kStyles[curveIndex % _countof(kStyles)];
 }
 
-CurveDebugStyle SubdividedCurveStyle(std::size_t curveIndex) {
+CurveDebugStyle SubdividedCurveStyle(CurveIndex curveIndex) {
     static constexpr CurveDebugStyle kStyles[] = {
         {{1.00f, 0.78f, 0.42f}, {1.00f, 0.88f, 0.64f}, 0.08f, 0.06f, 0.14f, 0.03f},
         {{0.46f, 0.92f, 0.98f}, {0.78f, 1.00f, 1.00f}, 0.08f, 0.06f, 0.14f, 0.03f},
@@ -970,7 +970,7 @@ private:
     }
 
     void CreateSceneGeometryBuffers() {
-        constexpr float kRoadCleanupRadius = 0.9f;
+        constexpr float kRoadCleanupRadius = 0.45f;
         const DirectX::XMFLOAT3 tangentColor = {1.00f, 0.18f, 0.48f};
         roughCurveRange_ = {};
         roughControlPointRange_ = {};
@@ -984,7 +984,7 @@ private:
 
         std::vector<ProcessedCurveData> processedCurves;
         processedCurves.reserve(authoredCurves_.size());
-        for (std::size_t curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
+        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
             const PolylineCurve& roughCurve = authoredCurves_[curveIndex];
             if (const auto error = ValidatePolylineCurve(roughCurve)) {
                 continue;
@@ -1010,13 +1010,13 @@ private:
         std::vector<DebugVertex> lineVertices;
         gridRange_ = BuildGroundGrid(lineVertices);
         roughCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
-        for (std::size_t curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
+        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
             BuildCurveSegments(authoredCurves_[curveIndex], RoughCurveStyle(curveIndex), lineVertices);
         }
         roughCurveRange_.vertexCount = static_cast<UINT>(lineVertices.size()) - roughCurveRange_.startVertex;
 
         roughControlPointRange_.startVertex = static_cast<UINT>(lineVertices.size());
-        for (std::size_t curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
+        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
             BuildControlPointMarkers(authoredCurves_[curveIndex], RoughCurveStyle(curveIndex), lineVertices);
         }
         roughControlPointRange_.vertexCount =
@@ -1049,14 +1049,19 @@ private:
             lineVertexBufferView_,
             "Failed to create the debug line vertex buffer.");
 
-        if (processedCurves.size() < 2) {
+        if (processedCurves.empty()) {
             return;
+        }
+
+        std::vector<PolylineCurve> roadSpines;
+        roadSpines.reserve(processedCurves.size());
+        for (const ProcessedCurveData& processedCurve : processedCurves) {
+            roadSpines.push_back(processedCurve.curve);
         }
 
         GenerateRoadResult generatedRoad = {};
         const auto issue = GenerateRoad(
-            processedCurves[processedCurves.size() - 2].curve,
-            processedCurves[processedCurves.size() - 1].curve,
+            roadSpines,
             kRoadCleanupRadius,
             kRibbonHalfWidth,
             generatedRoad,

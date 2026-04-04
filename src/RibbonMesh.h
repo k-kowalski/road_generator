@@ -10,6 +10,8 @@
 
 #include "PolylineCurve.h"
 
+using SampleIndex = std::size_t;
+
 enum class RibbonMeshBuildError : std::uint32_t {
     TooFewSamples = 1,
     NonPositiveHalfWidth,
@@ -24,7 +26,7 @@ enum class RibbonTangentMode : std::uint32_t {
 
 struct RibbonMeshBuildIssue {
     RibbonMeshBuildError error = RibbonMeshBuildError::TooFewSamples;
-    std::size_t sampleIndex = 0;
+    SampleIndex sampleIndex = 0;
 };
 
 inline constexpr DirectX::XMFLOAT3 kRibbonWireframeColor = {1.0f, 0.10f, 0.70f};

@@ -6,6 +6,9 @@
 #include <optional>
 #include <vector>
 
+using CurveIndex = std::size_t;
+using SegmentIndex = std::size_t;
+
 enum class PolylineCurveValidationError : std::uint32_t {
     TooFewPoints = 1,
     PointOffGroundPlane,

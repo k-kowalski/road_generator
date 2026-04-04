@@ -26,7 +26,7 @@ bool NormalizeVector(DirectX::FXMVECTOR vector, DirectX::XMVECTOR& normalizedVec
 
 bool ComputeCentralDifferenceTangent(
     const std::vector<DirectX::XMFLOAT3>& controlPoints,
-    std::size_t sampleIndex,
+    SampleIndex sampleIndex,
     DirectX::XMVECTOR& tangent) {
     DirectX::XMVECTOR rawTangent;
     if (sampleIndex == 0) {
@@ -46,7 +46,7 @@ bool ComputeCentralDifferenceTangent(
 
 bool ComputeAverageSegmentDirectionsTangent(
     const std::vector<DirectX::XMFLOAT3>& controlPoints,
-    std::size_t sampleIndex,
+    SampleIndex sampleIndex,
     DirectX::XMVECTOR& tangent) {
     if (sampleIndex == 0) {
         return NormalizeVector(
@@ -82,12 +82,12 @@ std::optional<RibbonMeshBuildIssue> ComputeSegmentSides(
     std::vector<DirectX::XMFLOAT3>& segmentSides) {
     segmentSides.clear();
 
-    const std::size_t segmentCount = curve.controlPoints.size() - 1;
+    const SampleIndex segmentCount = curve.controlPoints.size() - 1;
     segmentSides.reserve(segmentCount);
 
     const DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
-    for (std::size_t i = 0; i < segmentCount; ++i) {
+    for (SampleIndex i = 0; i < segmentCount; ++i) {
         DirectX::XMVECTOR direction;
         if (!NormalizeVector(
                 DirectX::XMVectorSubtract(LoadPoint(curve.controlPoints[i + 1]), LoadPoint(curve.controlPoints[i])),
@@ -110,7 +110,7 @@ std::optional<RibbonMeshBuildIssue> ComputeSegmentSides(
 
 bool ComputeCurveTangent(
     const std::vector<DirectX::XMFLOAT3>& controlPoints,
-    std::size_t sampleIndex,
+    SampleIndex sampleIndex,
     RibbonTangentMode tangentMode,
     DirectX::XMVECTOR& tangent) {
     switch (tangentMode) {
@@ -255,7 +255,7 @@ std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
         ribbonMesh.vertices.push_back(rightVertex);
     }
 
-    for (std::size_t sampleIndex = 0; sampleIndex + 1 < sampleCount; ++sampleIndex) {
+    for (SampleIndex sampleIndex = 0; sampleIndex + 1 < sampleCount; ++sampleIndex) {
         const std::uint32_t baseVertex = static_cast<std::uint32_t>(sampleIndex * 2);
         ribbonMesh.indices.push_back(baseVertex + 0);
         ribbonMesh.indices.push_back(baseVertex + 2);
