@@ -11,6 +11,8 @@ add_executable(DX12ColoredCube WIN32
     src/HalfEdgeMesh.h
     src/PolylineCurve.cpp
     src/PolylineCurve.h
+    src/RoadGeneration.cpp
+    src/RoadGeneration.h
     src/RibbonMesh.cpp
     src/RibbonMesh.h
     src/main.cpp
@@ -19,7 +21,7 @@ add_executable(DX12ColoredCube WIN32
 )
 
 source_group("Shaders" FILES shaders/cube.hlsl shaders/ribbon.hlsl)
-source_group("Source Files" FILES src/HalfEdgeMesh.cpp src/HalfEdgeMesh.h src/PolylineCurve.cpp src/PolylineCurve.h src/RibbonMesh.cpp src/RibbonMesh.h)
+source_group("Source Files" FILES src/HalfEdgeMesh.cpp src/HalfEdgeMesh.h src/PolylineCurve.cpp src/PolylineCurve.h src/RoadGeneration.cpp src/RoadGeneration.h src/RibbonMesh.cpp src/RibbonMesh.h)
 set_source_files_properties(shaders/cube.hlsl shaders/ribbon.hlsl PROPERTIES HEADER_FILE_ONLY YES)
 
 set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")

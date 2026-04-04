@@ -22,11 +22,17 @@ struct SegmentIntersection {
     float secondSegmentT;
 };
 
+struct TrimmedCurveBranch {
+    PolylineCurve curve;
+    DirectX::XMFLOAT3 trimPoint = {};
+    DirectX::XMFLOAT3 tangentAwayFromIntersection = {};
+};
+
 struct CurveTrimResult {
-    PolylineCurve curve11;
-    PolylineCurve curve12;
-    PolylineCurve curve21;
-    PolylineCurve curve22;
+    TrimmedCurveBranch curve11;
+    TrimmedCurveBranch curve12;
+    TrimmedCurveBranch curve21;
+    TrimmedCurveBranch curve22;
 };
 
 struct Vector2f {

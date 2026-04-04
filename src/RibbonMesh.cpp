@@ -154,7 +154,7 @@ bool TryComputeMiterOffset(
 
 } // namespace
 
-std::optional<RibbonMeshBuildIssue> ComputeRibbonCurveTangents(
+std::optional<RibbonMeshBuildIssue> ComputeCurveTangents(
     const PolylineCurve& curve,
     RibbonTangentMode tangentMode,
     std::vector<DirectX::XMFLOAT3>& tangents) {
@@ -185,7 +185,6 @@ std::optional<RibbonMeshBuildIssue> ComputeRibbonCurveTangents(
 std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
     const PolylineCurve& curve,
     float halfWidth,
-    float yOffset,
     RibbonMeshData& ribbonMesh,
     RibbonTangentMode tangentMode) {
     ribbonMesh.vertices.clear();
@@ -206,7 +205,7 @@ std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
     }
 
     std::vector<DirectX::XMFLOAT3> tangents;
-    if (const auto issue = ComputeRibbonCurveTangents(curve, tangentMode, tangents)) {
+    if (const auto issue = ComputeCurveTangents(curve, tangentMode, tangents)) {
         return issue;
     }
 
@@ -239,19 +238,20 @@ std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
             accumulatedLength += SegmentLength(curve.controlPoints[i - 1], curve.controlPoints[i]);
         }
 
-        const DirectX::XMVECTOR center =
-            DirectX::XMVectorAdd(LoadPoint(curve.controlPoints[i]), DirectX::XMVectorSet(0.0f, yOffset, 0.0f, 0.0f));
+        const DirectX::XMVECTOR center = LoadPoint(curve.controlPoints[i]);
         const DirectX::XMVECTOR left = DirectX::XMVectorSubtract(center, offset);
         const DirectX::XMVECTOR right = DirectX::XMVectorAdd(center, offset);
 
         RibbonVertex leftVertex = {};
         DirectX::XMStoreFloat3(&leftVertex.position, left);
         leftVertex.uv = {0.0f, accumulatedLength};
+        leftVertex.color = kRibbonWireframeColor;
         ribbonMesh.vertices.push_back(leftVertex);
 
         RibbonVertex rightVertex = {};
         DirectX::XMStoreFloat3(&rightVertex.position, right);
         rightVertex.uv = {1.0f, accumulatedLength};
+        rightVertex.color = kRibbonWireframeColor;
         ribbonMesh.vertices.push_back(rightVertex);
     }
 

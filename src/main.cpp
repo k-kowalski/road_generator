@@ -8,6 +8,7 @@
 #include <DirectXMath.h>
 
 #include "PolylineCurve.h"
+#include "RoadGeneration.h"
 #include "RibbonMesh.h"
 
 #include <algorithm>
@@ -29,7 +30,6 @@ constexpr UINT kWindowHeight = 720;
 constexpr wchar_t kWindowClassName[] = L"DX12RoadCurveWindow";
 constexpr wchar_t kWindowTitle[] = L"DX12 Road Curve";
 constexpr float kRibbonHalfWidth = 0.20f;
-constexpr float kRibbonYOffset = 0.01f;
 constexpr RibbonTangentMode kRibbonTangentMode = RibbonTangentMode::AverageSegmentDirections;
 constexpr float kTangentDebugYOffset = 0.14f;
 constexpr float kTangentDebugLength = 0.28f;
@@ -37,8 +37,8 @@ constexpr float kTangentDebugLength = 0.28f;
 struct OrbitCamera {
     float yaw = DirectX::XM_PI;
     float pitch = 0.48f;
-    float distance = 7.2f;
-    DirectX::XMFLOAT3 target = {1.5f, 0.15f, 0.0f};
+    float distance = 8.4f;
+    DirectX::XMFLOAT3 target = {0.0f, 0.15f, 0.0f};
 };
 
 struct SceneConstants {
@@ -87,9 +87,9 @@ D3D12_BLEND_DESC OpaqueBlendDesc() {
     return blendDesc;
 }
 
-D3D12_RASTERIZER_DESC DefaultRasterizerDesc() {
+D3D12_RASTERIZER_DESC DefaultRasterizerDesc(D3D12_FILL_MODE fillMode = D3D12_FILL_MODE_SOLID) {
     D3D12_RASTERIZER_DESC rasterizerDesc = {};
-    rasterizerDesc.FillMode = D3D12_FILL_MODE_SOLID;
+    rasterizerDesc.FillMode = fillMode;
     rasterizerDesc.CullMode = D3D12_CULL_MODE_NONE;
     rasterizerDesc.FrontCounterClockwise = FALSE;
     rasterizerDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
@@ -215,13 +215,36 @@ PolylineCurve TranslateCurve(const PolylineCurve& curve, float dx, float dy, flo
     return translatedCurve;
 }
 
-void AppendRibbonMesh(const RibbonMeshData& source, RibbonMeshData& destination) {
-    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(destination.vertices.size());
-    destination.vertices.insert(destination.vertices.end(), source.vertices.begin(), source.vertices.end());
-    destination.indices.reserve(destination.indices.size() + source.indices.size());
-    for (std::uint32_t index : source.indices) {
-        destination.indices.push_back(vertexOffset + index);
-    }
+PolylineCurve MakeRoadSpine1Curve() {
+    PolylineCurve curve;
+    curve.controlPoints = {
+        {-2.80f, 0.0f, -0.95f},
+        {-2.10f, 0.0f, -1.05f},
+        {-1.40f, 0.0f, -0.82f},
+        {-0.70f, 0.0f, -0.38f},
+        {0.00f, 0.0f, 0.00f},
+        {0.70f, 0.0f, 0.36f},
+        {1.40f, 0.0f, 0.80f},
+        {2.10f, 0.0f, 1.05f},
+        {2.80f, 0.0f, 0.96f},
+    };
+    return curve;
+}
+
+PolylineCurve MakeRoadSpine2Curve() {
+    PolylineCurve curve;
+    curve.controlPoints = {
+        {-0.95f, 0.0f, -2.80f},
+        {-1.05f, 0.0f, -2.10f},
+        {-0.80f, 0.0f, -1.40f},
+        {-0.34f, 0.0f, -0.70f},
+        {0.00f, 0.0f, 0.00f},
+        {0.36f, 0.0f, 0.70f},
+        {0.82f, 0.0f, 1.40f},
+        {1.05f, 0.0f, 2.10f},
+        {0.96f, 0.0f, 2.80f},
+    };
+    return curve;
 }
 
 void AppendLine(
@@ -237,9 +260,9 @@ DrawRange BuildGroundGrid(std::vector<DebugVertex>& vertices) {
     DrawRange range = {};
     range.startVertex = static_cast<UINT>(vertices.size());
 
-    constexpr float kGridExtent = 6.0f;
+    constexpr float kGridExtent = 8.0f;
     constexpr float kGridSpacing = 0.5f;
-    constexpr int kGridHalfSteps = 12;
+    constexpr int kGridHalfSteps = 16;
     const DirectX::XMFLOAT3 gridColor = {0.24f, 0.29f, 0.36f};
     const DirectX::XMFLOAT3 axisColor = {0.36f, 0.43f, 0.52f};
 
@@ -442,6 +465,9 @@ private:
                     return 0;
                 case '3':
                     showRibbon_ = !showRibbon_;
+                    return 0;
+                case '4':
+                    showRibbonWireframe_ = !showRibbonWireframe_;
                     return 0;
                 default:
                     break;
@@ -780,7 +806,7 @@ private:
 
     void CreatePipelineStates() {
         CreateLinePipelineState();
-        CreateRibbonPipelineState();
+        CreateRibbonPipelineStates();
     }
 
     void CreateLinePipelineState() {
@@ -809,18 +835,22 @@ private:
             "Failed to create the debug line graphics pipeline state.");
     }
 
-    void CreateRibbonPipelineState() {
-        static constexpr D3D12_INPUT_ELEMENT_DESC inputElements[] = {
+    void CreateRibbonPipelineStates() {
+        static constexpr D3D12_INPUT_ELEMENT_DESC ribbonInputElements[] = {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
             {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         };
+        static constexpr D3D12_INPUT_ELEMENT_DESC wireframeInputElements[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-        psoDesc.InputLayout = {inputElements, _countof(inputElements)};
+        psoDesc.InputLayout = {ribbonInputElements, _countof(ribbonInputElements)};
         psoDesc.pRootSignature = rootSignature_.Get();
         psoDesc.VS = {ribbonVertexShader_.data(), ribbonVertexShader_.size()};
         psoDesc.PS = {ribbonPixelShader_.data(), ribbonPixelShader_.size()};
-        psoDesc.RasterizerState = DefaultRasterizerDesc();
+        psoDesc.RasterizerState = DefaultRasterizerDesc(D3D12_FILL_MODE_SOLID);
         psoDesc.BlendState = OpaqueBlendDesc();
         psoDesc.DepthStencilState = DepthStencilDesc(D3D12_DEPTH_WRITE_MASK_ALL);
         psoDesc.SampleMask = UINT_MAX;
@@ -833,6 +863,14 @@ private:
         ThrowIfFailed(
             device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&ribbonPipelineState_)),
             "Failed to create the ribbon graphics pipeline state.");
+
+        psoDesc.InputLayout = {wireframeInputElements, _countof(wireframeInputElements)};
+        psoDesc.VS = {lineVertexShader_.data(), lineVertexShader_.size()};
+        psoDesc.PS = {linePixelShader_.data(), linePixelShader_.size()};
+        psoDesc.RasterizerState = DefaultRasterizerDesc(D3D12_FILL_MODE_WIREFRAME);
+        ThrowIfFailed(
+            device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&ribbonWireframePipelineState_)),
+            "Failed to create the ribbon wireframe graphics pipeline state.");
     }
 
     void CreateCommandList() {
@@ -849,23 +887,48 @@ private:
     }
 
     void CreateSceneGeometryBuffers() {
-        originalCurve_ = MakeDefaultPolylineCurve();
-        if (const auto error = ValidatePolylineCurve(originalCurve_)) {
+        const PolylineCurve referenceUCurve = TranslateCurve(MakeDefaultPolylineCurve(), -4.40f, 0.0f, 0.0f);
+        if (const auto error = ValidatePolylineCurve(referenceUCurve)) {
             FatalError(PolylineCurveValidationErrorMessage(*error));
         }
 
-        const DirectX::XMFLOAT3 tr = {3.75f, 0.0f, 0.0f};
-        sRoughCurve_ = TranslateCurve(MakeReferenceSCurve(), tr.x, tr.y, tr.z);
-        if (const auto error = ValidatePolylineCurve(sRoughCurve_)) {
+        const PolylineCurve referenceSCurve = TranslateCurve(MakeReferenceSCurve(), 4.40f, 0.0f, 0.0f);
+        if (const auto error = ValidatePolylineCurve(referenceSCurve)) {
             FatalError(PolylineCurveValidationErrorMessage(*error));
         }
 
-        subdividedCurve_ = SubdividePolylineCurveTowardsBezierLimit(sRoughCurve_);
-        if (const auto error = ValidatePolylineCurve(subdividedCurve_)) {
+        const PolylineCurve referenceSubdividedSCurve = SubdividePolylineCurveTowardsBezierLimit(referenceSCurve);
+        if (const auto error = ValidatePolylineCurve(referenceSubdividedSCurve)) {
             FatalError(PolylineCurveValidationErrorMessage(*error));
         }
 
-        const CurveDebugStyle originalStyle = {
+        const PolylineCurve roadSpine1 = MakeRoadSpine1Curve();
+        if (const auto error = ValidatePolylineCurve(roadSpine1)) {
+            FatalError(PolylineCurveValidationErrorMessage(*error));
+        }
+
+        const PolylineCurve roadSpine2 = MakeRoadSpine2Curve();
+        if (const auto error = ValidatePolylineCurve(roadSpine2)) {
+            FatalError(PolylineCurveValidationErrorMessage(*error));
+        }
+
+        const CurveDebugStyle referenceStyle = {
+            {0.46f, 0.43f, 0.38f},
+            {0.65f, 0.60f, 0.54f},
+            0.02f,
+            0.09f,
+            0.20f,
+            0.06f,
+        };
+        const CurveDebugStyle referenceSubdividedStyle = {
+            {0.32f, 0.49f, 0.54f},
+            {0.44f, 0.67f, 0.74f},
+            0.06f,
+            0.06f,
+            0.14f,
+            0.03f,
+        };
+        const CurveDebugStyle roadSpine1Style = {
             {0.95f, 0.56f, 0.21f},
             {1.00f, 0.76f, 0.46f},
             0.02f,
@@ -873,7 +936,7 @@ private:
             0.20f,
             0.06f,
         };
-        const CurveDebugStyle subdividedStyle = {
+        const CurveDebugStyle roadSpine2Style = {
             {0.18f, 0.84f, 0.90f},
             {0.72f, 0.98f, 1.00f},
             0.09f,
@@ -883,33 +946,72 @@ private:
         };
         const DirectX::XMFLOAT3 tangentColor = {1.00f, 0.18f, 0.48f};
 
-        std::vector<DirectX::XMFLOAT3> subdividedTangents;
-        if (const auto issue = ComputeRibbonCurveTangents(subdividedCurve_, kRibbonTangentMode, subdividedTangents)) {
+        std::vector<DirectX::XMFLOAT3> roadSpine1Tangents;
+        if (const auto issue = ComputeCurveTangents(roadSpine1, kRibbonTangentMode, roadSpine1Tangents)) {
             const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
+            FatalError(errorMessage.c_str());
+        }
+
+        std::vector<DirectX::XMFLOAT3> roadSpine2Tangents;
+        if (const auto issue = ComputeCurveTangents(roadSpine2, kRibbonTangentMode, roadSpine2Tangents)) {
+            const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
+            FatalError(errorMessage.c_str());
+        }
+
+        GenerateRoadResult generatedRoad = {};
+        if (const auto issue = GenerateRoad(
+                roadSpine1,
+                roadSpine2,
+                0.9f,
+                kRibbonHalfWidth,
+                generatedRoad,
+                kRibbonTangentMode)) {
+            const std::string errorMessage = GenerateRoadErrorMessage(*issue);
             FatalError(errorMessage.c_str());
         }
 
         std::vector<DebugVertex> lineVertices;
         gridRange_ = BuildGroundGrid(lineVertices);
-        sRoughCurveRange_ = BuildCurveSegments(sRoughCurve_, originalStyle, lineVertices);
-        originalCurveRange_ = BuildCurveSegments(originalCurve_, originalStyle, lineVertices);
-        subdividedCurveRange_ = BuildCurveSegments(subdividedCurve_, subdividedStyle, lineVertices);
-        originalControlPointRange_ = BuildControlPointMarkers(originalCurve_, originalStyle, lineVertices);
-        subdividedControlPointRange_ = BuildControlPointMarkers(subdividedCurve_, subdividedStyle, lineVertices);
-        subdividedTangentRange_ = BuildTangentSegments(
-            subdividedCurve_,
-            subdividedTangents,
+        referenceCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        BuildCurveSegments(referenceUCurve, referenceStyle, lineVertices);
+        BuildCurveSegments(referenceSCurve, referenceStyle, lineVertices);
+        BuildCurveSegments(referenceSubdividedSCurve, referenceSubdividedStyle, lineVertices);
+        referenceCurveRange_.vertexCount = static_cast<UINT>(lineVertices.size()) - referenceCurveRange_.startVertex;
+
+        roadSpineCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        BuildCurveSegments(roadSpine1, roadSpine1Style, lineVertices);
+        BuildCurveSegments(roadSpine2, roadSpine2Style, lineVertices);
+        roadSpineCurveRange_.vertexCount = static_cast<UINT>(lineVertices.size()) - roadSpineCurveRange_.startVertex;
+
+        roadSpineControlPointRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        BuildControlPointMarkers(roadSpine1, roadSpine1Style, lineVertices);
+        BuildControlPointMarkers(roadSpine2, roadSpine2Style, lineVertices);
+        roadSpineControlPointRange_.vertexCount =
+            static_cast<UINT>(lineVertices.size()) - roadSpineControlPointRange_.startVertex;
+
+        roadSpineTangentRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        BuildTangentSegments(
+            roadSpine1,
+            roadSpine1Tangents,
             kTangentDebugYOffset,
             kTangentDebugLength,
             tangentColor,
             lineVertices);
+        BuildTangentSegments(
+            roadSpine2,
+            roadSpine2Tangents,
+            kTangentDebugYOffset,
+            kTangentDebugLength,
+            tangentColor,
+            lineVertices);
+        roadSpineTangentRange_.vertexCount =
+            static_cast<UINT>(lineVertices.size()) - roadSpineTangentRange_.startVertex;
 
-        if (originalCurveRange_.vertexCount == 0 ||
-            subdividedCurveRange_.vertexCount == 0 ||
-            originalControlPointRange_.vertexCount == 0 ||
-            subdividedControlPointRange_.vertexCount == 0 ||
-            subdividedTangentRange_.vertexCount == 0) {
-            FatalError("Failed to build the debug geometry for the original and subdivided curves.");
+        if (referenceCurveRange_.vertexCount == 0 ||
+            roadSpineCurveRange_.vertexCount == 0 ||
+            roadSpineControlPointRange_.vertexCount == 0 ||
+            roadSpineTangentRange_.vertexCount == 0) {
+            FatalError("Failed to build the debug geometry for the reference curves or the generated road spines.");
         }
 
         CreateStaticVertexBuffer(
@@ -918,47 +1020,21 @@ private:
             lineVertexBufferView_,
             "Failed to create the debug line vertex buffer.");
 
-        RibbonMeshData originalRibbonMesh;
-        if (const auto issue = BuildFlatRibbonMesh(
-                originalCurve_,
-                kRibbonHalfWidth,
-                kRibbonYOffset,
-                originalRibbonMesh,
-                kRibbonTangentMode)) {
-            const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
-            FatalError(errorMessage.c_str());
-        }
-
-        RibbonMeshData subdividedRibbonMesh;
-        if (const auto issue = BuildFlatRibbonMesh(
-                subdividedCurve_,
-                kRibbonHalfWidth,
-                kRibbonYOffset,
-                subdividedRibbonMesh,
-                kRibbonTangentMode)) {
-            const std::string errorMessage = RibbonMeshBuildErrorMessage(*issue);
-            FatalError(errorMessage.c_str());
-        }
-
-        RibbonMeshData ribbonMesh;
-        AppendRibbonMesh(originalRibbonMesh, ribbonMesh);
-        AppendRibbonMesh(subdividedRibbonMesh, ribbonMesh);
-
-        if (ribbonMesh.vertices.empty() || ribbonMesh.indices.empty()) {
-            FatalError("Failed to build the ribbon meshes from the original and subdivided curves.");
+        if (generatedRoad.ribbonMesh.vertices.empty() || generatedRoad.ribbonMesh.indices.empty()) {
+            FatalError("Failed to build the generated road ribbon mesh.");
         }
 
         CreateStaticVertexBuffer(
-            ribbonMesh.vertices,
+            generatedRoad.ribbonMesh.vertices,
             ribbonVertexBuffer_,
             ribbonVertexBufferView_,
             "Failed to create the ribbon vertex buffer.");
         CreateStaticIndexBuffer(
-            ribbonMesh.indices,
+            generatedRoad.ribbonMesh.indices,
             ribbonIndexBuffer_,
             ribbonIndexBufferView_,
             "Failed to create the ribbon index buffer.");
-        ribbonIndexCount_ = static_cast<UINT>(ribbonMesh.indices.size());
+        ribbonIndexCount_ = static_cast<UINT>(generatedRoad.ribbonMesh.indices.size());
     }
 
     void CreateStaticBuffer(
@@ -1144,7 +1220,8 @@ private:
 
         commandList_->SetGraphicsRootConstantBufferView(0, cbAddress);
         if (showRibbon_ && ribbonIndexCount_ > 0) {
-            commandList_->SetPipelineState(ribbonPipelineState_.Get());
+            commandList_->SetPipelineState(
+                showRibbonWireframe_ ? ribbonWireframePipelineState_.Get() : ribbonPipelineState_.Get());
             commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList_->IASetVertexBuffers(0, 1, &ribbonVertexBufferView_);
             commandList_->IASetIndexBuffer(&ribbonIndexBufferView_);
@@ -1156,14 +1233,12 @@ private:
         commandList_->IASetVertexBuffers(0, 1, &lineVertexBufferView_);
         commandList_->DrawInstanced(gridRange_.vertexCount, 1, gridRange_.startVertex, 0);
         if (showOriginalCurve_) {
-            commandList_->DrawInstanced(originalCurveRange_.vertexCount, 1, originalCurveRange_.startVertex, 0);
-            commandList_->DrawInstanced(sRoughCurveRange_.vertexCount, 1, sRoughCurveRange_.startVertex, 0);
-            commandList_->DrawInstanced(originalControlPointRange_.vertexCount, 1, originalControlPointRange_.startVertex, 0);
+            commandList_->DrawInstanced(referenceCurveRange_.vertexCount, 1, referenceCurveRange_.startVertex, 0);
         }
         if (showSubdividedCurve_) {
-            commandList_->DrawInstanced(subdividedCurveRange_.vertexCount, 1, subdividedCurveRange_.startVertex, 0);
-            commandList_->DrawInstanced(subdividedControlPointRange_.vertexCount, 1, subdividedControlPointRange_.startVertex, 0);
-            commandList_->DrawInstanced(subdividedTangentRange_.vertexCount, 1, subdividedTangentRange_.startVertex, 0);
+            commandList_->DrawInstanced(roadSpineCurveRange_.vertexCount, 1, roadSpineCurveRange_.startVertex, 0);
+            commandList_->DrawInstanced(roadSpineControlPointRange_.vertexCount, 1, roadSpineControlPointRange_.startVertex, 0);
+            commandList_->DrawInstanced(roadSpineTangentRange_.vertexCount, 1, roadSpineTangentRange_.startVertex, 0);
         }
 
         const D3D12_RESOURCE_BARRIER toPresent = TransitionBarrier(
@@ -1248,6 +1323,7 @@ private:
     ComPtr<ID3D12RootSignature> rootSignature_;
     ComPtr<ID3D12PipelineState> linePipelineState_;
     ComPtr<ID3D12PipelineState> ribbonPipelineState_;
+    ComPtr<ID3D12PipelineState> ribbonWireframePipelineState_;
     std::vector<std::uint8_t> lineVertexShader_;
     std::vector<std::uint8_t> linePixelShader_;
     std::vector<std::uint8_t> ribbonVertexShader_;
@@ -1258,16 +1334,11 @@ private:
     ComPtr<ID3D12Resource> ribbonIndexBuffer_;
     ComPtr<ID3D12Resource> constantBuffer_;
 
-    PolylineCurve originalCurve_;
-    PolylineCurve sRoughCurve_;
-    PolylineCurve subdividedCurve_;
     DrawRange gridRange_ = {};
-    DrawRange originalCurveRange_ = {};
-    DrawRange sRoughCurveRange_ = {};
-    DrawRange subdividedCurveRange_ = {};
-    DrawRange originalControlPointRange_ = {};
-    DrawRange subdividedControlPointRange_ = {};
-    DrawRange subdividedTangentRange_ = {};
+    DrawRange referenceCurveRange_ = {};
+    DrawRange roadSpineCurveRange_ = {};
+    DrawRange roadSpineControlPointRange_ = {};
+    DrawRange roadSpineTangentRange_ = {};
 
     D3D12_VIEWPORT viewport_ = {};
     D3D12_RECT scissorRect_ = {};
@@ -1286,6 +1357,7 @@ private:
     bool showOriginalCurve_ = true;
     bool showSubdividedCurve_ = true;
     bool showRibbon_ = true;
+    bool showRibbonWireframe_ = false;
     bool orbitingCamera_ = false;
     int lastMouseX_ = 0;
     int lastMouseY_ = 0;

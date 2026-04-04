@@ -18,6 +18,25 @@ float DistanceSquared(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT3& ri
     return dx * dx + dy * dy + dz * dz;
 }
 
+DirectX::XMFLOAT3 NormalizeDirection(
+    const DirectX::XMFLOAT3& start,
+    const DirectX::XMFLOAT3& end) {
+    const float dx = end.x - start.x;
+    const float dy = end.y - start.y;
+    const float dz = end.z - start.z;
+    const float lengthSquared = dx * dx + dy * dy + dz * dz;
+    if (lengthSquared <= 1.0e-8f) {
+        return {0.0f, 0.0f, 0.0f};
+    }
+
+    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+    return {
+        dx * inverseLength,
+        dy * inverseLength,
+        dz * inverseLength,
+    };
+}
+
 Vector2f Subtract(const Vector2f& end, const Vector2f& start) {
     return {end.x - start.x, end.z - start.z};
 }
@@ -109,34 +128,42 @@ void AppendTrimEndpoint(
     points.push_back(trimPoint);
 }
 
-PolylineCurve BuildTrimmedPrefix(
+TrimmedCurveBranch BuildTrimmedPrefix(
     const PolylineCurve& curve,
     const SegmentCircleHit& firstHit,
     float mergeDistanceSquared) {
-    PolylineCurve trimmed;
-    trimmed.controlPoints.reserve(firstHit.segmentIndex + 2);
+    TrimmedCurveBranch trimmed = {};
+    trimmed.curve.controlPoints.reserve(firstHit.segmentIndex + 2);
 
     for (std::size_t i = 0; i <= firstHit.segmentIndex; ++i) {
-        trimmed.controlPoints.push_back(curve.controlPoints[i]);
+        trimmed.curve.controlPoints.push_back(curve.controlPoints[i]);
     }
 
-    AppendTrimEndpoint(trimmed.controlPoints, firstHit.position, mergeDistanceSquared);
+    AppendTrimEndpoint(trimmed.curve.controlPoints, firstHit.position, mergeDistanceSquared);
+    trimmed.trimPoint = firstHit.position;
+    trimmed.tangentAwayFromIntersection = NormalizeDirection(
+        curve.controlPoints[firstHit.segmentIndex + 1],
+        curve.controlPoints[firstHit.segmentIndex]);
     return trimmed;
 }
 
-PolylineCurve BuildTrimmedSuffix(
+TrimmedCurveBranch BuildTrimmedSuffix(
     const PolylineCurve& curve,
     const SegmentCircleHit& lastHit,
     float mergeDistanceSquared) {
-    PolylineCurve trimmed;
-    trimmed.controlPoints.reserve(curve.controlPoints.size() - lastHit.segmentIndex);
+    TrimmedCurveBranch trimmed = {};
+    trimmed.curve.controlPoints.reserve(curve.controlPoints.size() - lastHit.segmentIndex);
 
     for (std::size_t i = curve.controlPoints.size(); i-- > lastHit.segmentIndex + 1;) {
-        trimmed.controlPoints.push_back(curve.controlPoints[i]);
+        trimmed.curve.controlPoints.push_back(curve.controlPoints[i]);
     }
 
-    AppendTrimEndpoint(trimmed.controlPoints, lastHit.position, mergeDistanceSquared);
-    std::reverse(trimmed.controlPoints.begin(), trimmed.controlPoints.end());
+    AppendTrimEndpoint(trimmed.curve.controlPoints, lastHit.position, mergeDistanceSquared);
+    std::reverse(trimmed.curve.controlPoints.begin(), trimmed.curve.controlPoints.end());
+    trimmed.trimPoint = lastHit.position;
+    trimmed.tangentAwayFromIntersection = NormalizeDirection(
+        curve.controlPoints[lastHit.segmentIndex],
+        curve.controlPoints[lastHit.segmentIndex + 1]);
     return trimmed;
 }
 

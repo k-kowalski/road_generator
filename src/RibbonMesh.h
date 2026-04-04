@@ -27,9 +27,12 @@ struct RibbonMeshBuildIssue {
     std::size_t sampleIndex = 0;
 };
 
+inline constexpr DirectX::XMFLOAT3 kRibbonWireframeColor = {1.0f, 0.10f, 0.70f};
+
 struct RibbonVertex {
     DirectX::XMFLOAT3 position;
     DirectX::XMFLOAT2 uv;
+    DirectX::XMFLOAT3 color = kRibbonWireframeColor;
 };
 
 struct RibbonMeshData {
@@ -37,7 +40,7 @@ struct RibbonMeshData {
     std::vector<std::uint32_t> indices;
 };
 
-std::optional<RibbonMeshBuildIssue> ComputeRibbonCurveTangents(
+std::optional<RibbonMeshBuildIssue> ComputeCurveTangents(
     const PolylineCurve& curve,
     RibbonTangentMode tangentMode,
     std::vector<DirectX::XMFLOAT3>& tangents);
@@ -45,7 +48,6 @@ std::optional<RibbonMeshBuildIssue> ComputeRibbonCurveTangents(
 std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
     const PolylineCurve& curve,
     float halfWidth,
-    float yOffset,
     RibbonMeshData& ribbonMesh,
     RibbonTangentMode tangentMode = RibbonTangentMode::AverageSegmentDirections);
 
