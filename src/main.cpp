@@ -12,12 +12,17 @@
 #include "RibbonMesh.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -67,6 +72,25 @@ struct ProcessedCurveData {
     CurveIndex authoredIndex = 0;
     PolylineCurve curve;
     std::vector<DirectX::XMFLOAT3> tangents;
+};
+
+struct SceneGeometryCpuData {
+    std::vector<DebugVertex> lineVertices;
+    DrawRange gridRange = {};
+    DrawRange roughCurveRange = {};
+    DrawRange roughControlPointRange = {};
+    DrawRange subdividedCurveRange = {};
+    DrawRange subdividedTangentRange = {};
+    std::vector<RibbonVertex> ribbonVertices;
+    std::vector<std::uint32_t> ribbonIndices;
+};
+
+struct RenderStateSnapshot {
+    OrbitCamera camera = {};
+    bool showOriginalCurve = true;
+    bool showSubdividedCurve = true;
+    bool showRibbon = true;
+    bool showRibbonWireframe = false;
 };
 
 UINT AlignTo(UINT value, UINT alignment) {
@@ -347,13 +371,17 @@ public:
         CreateAppWindow(cmdShow);
         InitializeD3D();
         previousFrameTime_ = std::chrono::steady_clock::now();
+        StartThreads();
+        RequestGeometryRebuild();
         MainLoop();
+        StopThreads();
         Cleanup();
         return 0;
     }
 
 private:
     void ResetCamera() {
+        std::lock_guard<std::mutex> lock(renderStateMutex_);
         camera_ = OrbitCamera{};
     }
 
@@ -365,27 +393,28 @@ private:
             100.0f);
     }
 
-    DirectX::XMMATRIX CameraViewMatrix() const {
-        const float cosPitch = std::cos(camera_.pitch);
-        const float sinPitch = std::sin(camera_.pitch);
-        const float cosYaw = std::cos(camera_.yaw);
-        const float sinYaw = std::sin(camera_.yaw);
+    DirectX::XMMATRIX CameraViewMatrix(const OrbitCamera& camera) const {
+        const float cosPitch = std::cos(camera.pitch);
+        const float sinPitch = std::sin(camera.pitch);
+        const float cosYaw = std::cos(camera.yaw);
+        const float sinYaw = std::sin(camera.yaw);
 
         const DirectX::XMFLOAT3 eye = {
-            camera_.target.x + camera_.distance * cosPitch * sinYaw,
-            camera_.target.y + camera_.distance * sinPitch,
-            camera_.target.z + camera_.distance * cosPitch * cosYaw
+            camera.target.x + camera.distance * cosPitch * sinYaw,
+            camera.target.y + camera.distance * sinPitch,
+            camera.target.z + camera.distance * cosPitch * cosYaw
         };
 
         return DirectX::XMMatrixLookAtLH(
             DirectX::XMVectorSet(eye.x, eye.y, eye.z, 1.0f),
-            DirectX::XMVectorSet(camera_.target.x, camera_.target.y, camera_.target.z, 1.0f),
+            DirectX::XMVectorSet(camera.target.x, camera.target.y, camera.target.z, 1.0f),
             DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
     }
 
     bool ScreenPointToGroundPlane(int screenX, int screenY, DirectX::XMFLOAT3& groundPoint) const {
         const DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
-        const DirectX::XMMATRIX view = CameraViewMatrix();
+        const OrbitCamera camera = CaptureRenderStateSnapshot().camera;
+        const DirectX::XMMATRIX view = CameraViewMatrix(camera);
         const DirectX::XMMATRIX projection = ProjectionMatrix();
 
         const DirectX::XMVECTOR nearPoint = DirectX::XMVector3Unproject(
@@ -434,32 +463,23 @@ private:
         return std::isfinite(groundPoint.x) && std::isfinite(groundPoint.z);
     }
 
-    void RebuildSceneGeometryBuffers() {
-        if (device_ == nullptr) {
-            return;
-        }
-
-        if (commandQueue_ != nullptr && fence_ != nullptr && fenceEvent_ != nullptr) {
-            WaitForGpu();
-        }
-
-        CreateSceneGeometryBuffers();
-    }
-
     void AppendControlPointToCurrentCurve(const DirectX::XMFLOAT3& point) {
-        if (!currentCurveActive_) {
-            authoredCurves_.push_back({});
-            currentCurveActive_ = true;
-        }
+        {
+            std::lock_guard<std::mutex> lock(authoredCurvesMutex_);
+            if (!currentCurveActive_) {
+                authoredCurves_.push_back({});
+                currentCurveActive_ = true;
+            }
 
-        PolylineCurve& currentCurve = authoredCurves_.back();
-        if (!currentCurve.controlPoints.empty() &&
-            DistanceSquared(currentCurve.controlPoints.back(), point) <= 1.0e-6f) {
-            return;
-        }
+            PolylineCurve& currentCurve = authoredCurves_.back();
+            if (!currentCurve.controlPoints.empty() &&
+                DistanceSquared(currentCurve.controlPoints.back(), point) <= 1.0e-6f) {
+                return;
+            }
 
-        currentCurve.controlPoints.push_back(point);
-        RebuildSceneGeometryBuffers();
+            currentCurve.controlPoints.push_back(point);
+        }
+        RequestGeometryRebuild();
     }
 
     void FinishCurrentCurve() {
@@ -468,7 +488,31 @@ private:
         }
 
         currentCurveActive_ = false;
-        RebuildSceneGeometryBuffers();
+        RequestGeometryRebuild();
+    }
+
+    std::vector<PolylineCurve> CaptureAuthoredCurvesSnapshot() const {
+        std::lock_guard<std::mutex> lock(authoredCurvesMutex_);
+        return authoredCurves_;
+    }
+
+    RenderStateSnapshot CaptureRenderStateSnapshot() const {
+        std::lock_guard<std::mutex> lock(renderStateMutex_);
+        RenderStateSnapshot snapshot = {};
+        snapshot.camera = camera_;
+        snapshot.showOriginalCurve = showOriginalCurve_;
+        snapshot.showSubdividedCurve = showSubdividedCurve_;
+        snapshot.showRibbon = showRibbon_;
+        snapshot.showRibbonWireframe = showRibbonWireframe_;
+        return snapshot;
+    }
+
+    void RequestGeometryRebuild() {
+        {
+            std::lock_guard<std::mutex> lock(geometryRequestMutex_);
+            ++geometryRequestVersion_;
+        }
+        geometryRequestCondition_.notify_one();
     }
 
     void UpdateCamera(float deltaSeconds) {
@@ -538,16 +582,28 @@ private:
                     ResetCamera();
                     return 0;
                 case '1':
-                    showOriginalCurve_ = !showOriginalCurve_;
+                    {
+                        std::lock_guard<std::mutex> lock(renderStateMutex_);
+                        showOriginalCurve_ = !showOriginalCurve_;
+                    }
                     return 0;
                 case '2':
-                    showSubdividedCurve_ = !showSubdividedCurve_;
+                    {
+                        std::lock_guard<std::mutex> lock(renderStateMutex_);
+                        showSubdividedCurve_ = !showSubdividedCurve_;
+                    }
                     return 0;
                 case '3':
-                    showRibbon_ = !showRibbon_;
+                    {
+                        std::lock_guard<std::mutex> lock(renderStateMutex_);
+                        showRibbon_ = !showRibbon_;
+                    }
                     return 0;
                 case '4':
-                    showRibbonWireframe_ = !showRibbonWireframe_;
+                    {
+                        std::lock_guard<std::mutex> lock(renderStateMutex_);
+                        showRibbonWireframe_ = !showRibbonWireframe_;
+                    }
                     return 0;
                 case VK_RETURN:
                     FinishCurrentCurve();
@@ -579,6 +635,7 @@ private:
                 lastMouseX_ = x;
                 lastMouseY_ = y;
 
+                std::lock_guard<std::mutex> lock(renderStateMutex_);
                 camera_.yaw += static_cast<float>(dx) * 0.01f;
                 camera_.pitch += static_cast<float>(dy) * 0.01f;
                 camera_.pitch = ClampFloat(camera_.pitch, -1.35f, 1.35f);
@@ -587,12 +644,14 @@ private:
             break;
         case WM_MOUSEWHEEL: {
             const short wheelDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+            std::lock_guard<std::mutex> lock(renderStateMutex_);
             camera_.distance *= (wheelDelta > 0) ? 0.9f : 1.1f;
             camera_.distance = ClampFloat(camera_.distance, 2.0f, 20.0f);
             return 0;
         }
         case WM_DESTROY:
-            running_ = false;
+            running_.store(false);
+            geometryRequestCondition_.notify_one();
             PostQuitMessage(0);
             return 0;
         default:
@@ -649,7 +708,6 @@ private:
         LoadCompiledShaders();
         CreatePipelineStates();
         CreateCommandList();
-        CreateSceneGeometryBuffers();
         CreateConstantBuffer();
         CreateFenceObjects();
     }
@@ -970,23 +1028,15 @@ private:
         ThrowIfFailed(commandList_->Close(), "Failed to close the initial command list.");
     }
 
-    void CreateSceneGeometryBuffers() {
+    SceneGeometryCpuData BuildSceneGeometryData(const std::vector<PolylineCurve>& authoredCurves) const {
         constexpr float kRoadCleanupRadius = 0.45f;
         const DirectX::XMFLOAT3 tangentColor = {1.00f, 0.18f, 0.48f};
-        roughCurveRange_ = {};
-        roughControlPointRange_ = {};
-        subdividedCurveRange_ = {};
-        subdividedTangentRange_ = {};
-        ribbonVertexBuffer_.Reset();
-        ribbonIndexBuffer_.Reset();
-        ribbonVertexBufferView_ = {};
-        ribbonIndexBufferView_ = {};
-        ribbonIndexCount_ = 0;
+        SceneGeometryCpuData geometry = {};
 
         std::vector<ProcessedCurveData> processedCurves;
-        processedCurves.reserve(authoredCurves_.size());
-        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
-            const PolylineCurve& roughCurve = authoredCurves_[curveIndex];
+        processedCurves.reserve(authoredCurves.size());
+        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves.size(); ++curveIndex) {
+            const PolylineCurve& roughCurve = authoredCurves[curveIndex];
             if (const auto error = ValidatePolylineCurve(roughCurve)) {
                 continue;
             }
@@ -1008,29 +1058,32 @@ private:
             processedCurves.push_back(std::move(processedCurve));
         }
 
-        std::vector<DebugVertex> lineVertices;
-        gridRange_ = BuildGroundGrid(lineVertices);
-        roughCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
-        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
-            BuildCurveSegments(authoredCurves_[curveIndex], RoughCurveStyle(curveIndex), lineVertices);
+        geometry.gridRange = BuildGroundGrid(geometry.lineVertices);
+        geometry.roughCurveRange.startVertex = static_cast<UINT>(geometry.lineVertices.size());
+        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves.size(); ++curveIndex) {
+            BuildCurveSegments(authoredCurves[curveIndex], RoughCurveStyle(curveIndex), geometry.lineVertices);
         }
-        roughCurveRange_.vertexCount = static_cast<UINT>(lineVertices.size()) - roughCurveRange_.startVertex;
+        geometry.roughCurveRange.vertexCount =
+            static_cast<UINT>(geometry.lineVertices.size()) - geometry.roughCurveRange.startVertex;
 
-        roughControlPointRange_.startVertex = static_cast<UINT>(lineVertices.size());
-        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves_.size(); ++curveIndex) {
-            BuildControlPointMarkers(authoredCurves_[curveIndex], RoughCurveStyle(curveIndex), lineVertices);
+        geometry.roughControlPointRange.startVertex = static_cast<UINT>(geometry.lineVertices.size());
+        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves.size(); ++curveIndex) {
+            BuildControlPointMarkers(authoredCurves[curveIndex], RoughCurveStyle(curveIndex), geometry.lineVertices);
         }
-        roughControlPointRange_.vertexCount =
-            static_cast<UINT>(lineVertices.size()) - roughControlPointRange_.startVertex;
+        geometry.roughControlPointRange.vertexCount =
+            static_cast<UINT>(geometry.lineVertices.size()) - geometry.roughControlPointRange.startVertex;
 
-        subdividedCurveRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        geometry.subdividedCurveRange.startVertex = static_cast<UINT>(geometry.lineVertices.size());
         for (const ProcessedCurveData& processedCurve : processedCurves) {
-            BuildCurveSegments(processedCurve.curve, SubdividedCurveStyle(processedCurve.authoredIndex), lineVertices);
+            BuildCurveSegments(
+                processedCurve.curve,
+                SubdividedCurveStyle(processedCurve.authoredIndex),
+                geometry.lineVertices);
         }
-        subdividedCurveRange_.vertexCount =
-            static_cast<UINT>(lineVertices.size()) - subdividedCurveRange_.startVertex;
+        geometry.subdividedCurveRange.vertexCount =
+            static_cast<UINT>(geometry.lineVertices.size()) - geometry.subdividedCurveRange.startVertex;
 
-        subdividedTangentRange_.startVertex = static_cast<UINT>(lineVertices.size());
+        geometry.subdividedTangentRange.startVertex = static_cast<UINT>(geometry.lineVertices.size());
         for (const ProcessedCurveData& processedCurve : processedCurves) {
             const CurveDebugStyle style = SubdividedCurveStyle(processedCurve.authoredIndex);
             BuildTangentSegments(
@@ -1039,19 +1092,13 @@ private:
                 style.yOffset + kTangentDebugYOffset,
                 kTangentDebugLength,
                 tangentColor,
-                lineVertices);
+                geometry.lineVertices);
         }
-        subdividedTangentRange_.vertexCount =
-            static_cast<UINT>(lineVertices.size()) - subdividedTangentRange_.startVertex;
-
-        CreateStaticVertexBuffer(
-            lineVertices,
-            lineVertexBuffer_,
-            lineVertexBufferView_,
-            "Failed to create the debug line vertex buffer.");
+        geometry.subdividedTangentRange.vertexCount =
+            static_cast<UINT>(geometry.lineVertices.size()) - geometry.subdividedTangentRange.startVertex;
 
         if (processedCurves.empty()) {
-            return;
+            return geometry;
         }
 
         std::vector<PolylineCurve> roadSpines;
@@ -1070,20 +1117,68 @@ private:
         if (issue.has_value() ||
             generatedRoad.ribbonMesh.vertices.empty() ||
             generatedRoad.ribbonMesh.indices.empty()) {
+            return geometry;
+        }
+
+        geometry.ribbonVertices = std::move(generatedRoad.ribbonMesh.vertices);
+        geometry.ribbonIndices = std::move(generatedRoad.ribbonMesh.indices);
+        return geometry;
+    }
+
+    void UploadSceneGeometryBuffers(const SceneGeometryCpuData& geometry) {
+        gridRange_ = geometry.gridRange;
+        roughCurveRange_ = geometry.roughCurveRange;
+        roughControlPointRange_ = geometry.roughControlPointRange;
+        subdividedCurveRange_ = geometry.subdividedCurveRange;
+        subdividedTangentRange_ = geometry.subdividedTangentRange;
+        ribbonVertexBuffer_.Reset();
+        ribbonIndexBuffer_.Reset();
+        ribbonVertexBufferView_ = {};
+        ribbonIndexBufferView_ = {};
+        ribbonIndexCount_ = 0;
+
+        CreateStaticVertexBuffer(
+            geometry.lineVertices,
+            lineVertexBuffer_,
+            lineVertexBufferView_,
+            "Failed to create the debug line vertex buffer.");
+
+        if (geometry.ribbonVertices.empty() || geometry.ribbonIndices.empty()) {
             return;
         }
 
         CreateStaticVertexBuffer(
-            generatedRoad.ribbonMesh.vertices,
+            geometry.ribbonVertices,
             ribbonVertexBuffer_,
             ribbonVertexBufferView_,
             "Failed to create the ribbon vertex buffer.");
         CreateStaticIndexBuffer(
-            generatedRoad.ribbonMesh.indices,
+            geometry.ribbonIndices,
             ribbonIndexBuffer_,
             ribbonIndexBufferView_,
             "Failed to create the ribbon index buffer.");
-        ribbonIndexCount_ = static_cast<UINT>(generatedRoad.ribbonMesh.indices.size());
+        ribbonIndexCount_ = static_cast<UINT>(geometry.ribbonIndices.size());
+    }
+
+    void ApplyPendingSceneGeometry() {
+        std::shared_ptr<SceneGeometryCpuData> pendingGeometry;
+        std::uint64_t pendingVersion = 0;
+        {
+            std::lock_guard<std::mutex> lock(pendingGeometryMutex_);
+            if (pendingGeometry_ == nullptr || pendingGeometryVersion_ <= uploadedGeometryVersion_) {
+                return;
+            }
+
+            pendingGeometry = pendingGeometry_;
+            pendingVersion = pendingGeometryVersion_;
+        }
+
+        if (commandQueue_ != nullptr && fence_ != nullptr && fenceEvent_ != nullptr) {
+            WaitForGpu();
+        }
+
+        UploadSceneGeometryBuffers(*pendingGeometry);
+        uploadedGeometryVersion_ = pendingVersion;
     }
 
     void CreateStaticBuffer(
@@ -1190,25 +1285,95 @@ private:
         }
     }
 
+    void StartThreads() {
+        geometryWorkerThread_ = std::thread(&RoadCurveApp::GeometryWorkerMain, this);
+        renderThread_ = std::thread(&RoadCurveApp::RenderThreadMain, this);
+    }
+
+    void StopThreads() {
+        running_.store(false);
+        geometryRequestCondition_.notify_one();
+
+        if (geometryWorkerThread_.joinable()) {
+            geometryWorkerThread_.join();
+        }
+
+        if (renderThread_.joinable()) {
+            renderThread_.join();
+        }
+    }
+
     void MainLoop() {
         MSG message = {};
-        while (running_) {
+        while (running_.load()) {
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
 
-            if (!running_) {
+            if (!running_.load()) {
                 break;
             }
 
-            RenderFrame();
+            const auto now = std::chrono::steady_clock::now();
+            const float deltaSeconds = std::chrono::duration<float>(now - previousFrameTime_).count();
+            previousFrameTime_ = now;
+            {
+                std::lock_guard<std::mutex> lock(renderStateMutex_);
+                UpdateCamera(deltaSeconds);
+            }
+            Sleep(1);
         }
     }
 
-    void RenderFrame() {
-        UpdateSceneConstants();
-        PopulateCommandList();
+    void RenderThreadMain() {
+        while (running_.load()) {
+            ApplyPendingSceneGeometry();
+            RenderFrame(CaptureRenderStateSnapshot());
+        }
+    }
+
+    void GeometryWorkerMain() {
+        std::uint64_t processedRequestVersion = 0;
+
+        while (true) {
+            std::uint64_t requestVersion = 0;
+            {
+                std::unique_lock<std::mutex> lock(geometryRequestMutex_);
+                geometryRequestCondition_.wait(lock, [this, &processedRequestVersion]() {
+                    return !running_.load() || geometryRequestVersion_ != processedRequestVersion;
+                });
+
+                if (!running_.load() && geometryRequestVersion_ == processedRequestVersion) {
+                    return;
+                }
+
+                requestVersion = geometryRequestVersion_;
+            }
+
+            SceneGeometryCpuData geometry = BuildSceneGeometryData(CaptureAuthoredCurvesSnapshot());
+
+            {
+                std::lock_guard<std::mutex> lock(geometryRequestMutex_);
+                if (requestVersion != geometryRequestVersion_) {
+                    processedRequestVersion = requestVersion;
+                    continue;
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(pendingGeometryMutex_);
+                pendingGeometry_ = std::make_shared<SceneGeometryCpuData>(std::move(geometry));
+                pendingGeometryVersion_ = requestVersion;
+            }
+
+            processedRequestVersion = requestVersion;
+        }
+    }
+
+    void RenderFrame(const RenderStateSnapshot& renderState) {
+        UpdateSceneConstants(renderState);
+        PopulateCommandList(renderState);
 
         ID3D12CommandList* commandLists[] = {commandList_.Get()};
         commandQueue_->ExecuteCommandLists(1, commandLists);
@@ -1217,14 +1382,8 @@ private:
         MoveToNextFrame();
     }
 
-    void UpdateSceneConstants() {
-        const auto now = std::chrono::steady_clock::now();
-        const float deltaSeconds = std::chrono::duration<float>(now - previousFrameTime_).count();
-        previousFrameTime_ = now;
-
-        UpdateCamera(deltaSeconds);
-
-        const DirectX::XMMATRIX view = CameraViewMatrix();
+    void UpdateSceneConstants(const RenderStateSnapshot& renderState) {
+        const DirectX::XMMATRIX view = CameraViewMatrix(renderState.camera);
         const DirectX::XMMATRIX projection = ProjectionMatrix();
 
         SceneConstants constants = {};
@@ -1236,7 +1395,7 @@ private:
             sizeof(constants));
     }
 
-    void PopulateCommandList() {
+    void PopulateCommandList(const RenderStateSnapshot& renderState) {
         ThrowIfFailed(commandAllocators_[frameIndex_]->Reset(), "Failed to reset the command allocator.");
         ThrowIfFailed(
             commandList_->Reset(commandAllocators_[frameIndex_].Get(), linePipelineState_.Get()),
@@ -1264,9 +1423,9 @@ private:
             constantBuffer_->GetGPUVirtualAddress() + static_cast<UINT64>(frameIndex_) * constantBufferStride_;
 
         commandList_->SetGraphicsRootConstantBufferView(0, cbAddress);
-        if (showRibbon_ && ribbonIndexCount_ > 0) {
+        if (renderState.showRibbon && ribbonIndexCount_ > 0) {
             commandList_->SetPipelineState(
-                showRibbonWireframe_ ? ribbonWireframePipelineState_.Get() : ribbonPipelineState_.Get());
+                renderState.showRibbonWireframe ? ribbonWireframePipelineState_.Get() : ribbonPipelineState_.Get());
             commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList_->IASetVertexBuffers(0, 1, &ribbonVertexBufferView_);
             commandList_->IASetIndexBuffer(&ribbonIndexBufferView_);
@@ -1275,9 +1434,11 @@ private:
 
         commandList_->SetPipelineState(linePipelineState_.Get());
         commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-        commandList_->IASetVertexBuffers(0, 1, &lineVertexBufferView_);
-        commandList_->DrawInstanced(gridRange_.vertexCount, 1, gridRange_.startVertex, 0);
-        if (showOriginalCurve_) {
+        if (lineVertexBufferView_.SizeInBytes > 0) {
+            commandList_->IASetVertexBuffers(0, 1, &lineVertexBufferView_);
+            commandList_->DrawInstanced(gridRange_.vertexCount, 1, gridRange_.startVertex, 0);
+        }
+        if (renderState.showOriginalCurve && lineVertexBufferView_.SizeInBytes > 0) {
             commandList_->DrawInstanced(roughCurveRange_.vertexCount, 1, roughCurveRange_.startVertex, 0);
             commandList_->DrawInstanced(
                 roughControlPointRange_.vertexCount,
@@ -1285,7 +1446,7 @@ private:
                 roughControlPointRange_.startVertex,
                 0);
         }
-        if (showSubdividedCurve_) {
+        if (renderState.showSubdividedCurve && lineVertexBufferView_.SizeInBytes > 0) {
             commandList_->DrawInstanced(
                 subdividedCurveRange_.vertexCount,
                 1,
@@ -1360,7 +1521,7 @@ private:
 
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
-    bool running_ = true;
+    std::atomic<bool> running_{true};
     UINT width_ = kWindowWidth;
     UINT height_ = kWindowHeight;
     UINT dxgiFactoryFlags_ = 0;
@@ -1410,12 +1571,23 @@ private:
     UINT64 fenceValues_[kFrameCount] = {};
     HANDLE fenceEvent_ = nullptr;
     std::uint8_t* constantBufferDataBegin_ = nullptr;
+    mutable std::mutex renderStateMutex_;
     OrbitCamera camera_{};
-    std::vector<PolylineCurve> authoredCurves_;
     bool showOriginalCurve_ = true;
     bool showSubdividedCurve_ = true;
     bool showRibbon_ = true;
     bool showRibbonWireframe_ = false;
+    mutable std::mutex authoredCurvesMutex_;
+    std::vector<PolylineCurve> authoredCurves_;
+    std::mutex geometryRequestMutex_;
+    std::condition_variable geometryRequestCondition_;
+    std::uint64_t geometryRequestVersion_ = 0;
+    std::mutex pendingGeometryMutex_;
+    std::shared_ptr<SceneGeometryCpuData> pendingGeometry_;
+    std::uint64_t pendingGeometryVersion_ = 0;
+    std::uint64_t uploadedGeometryVersion_ = 0;
+    std::thread renderThread_;
+    std::thread geometryWorkerThread_;
     bool currentCurveActive_ = false;
     bool orbitingCamera_ = false;
     int lastMouseX_ = 0;
