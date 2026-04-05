@@ -245,12 +245,14 @@ std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
         RibbonVertex leftVertex = {};
         DirectX::XMStoreFloat3(&leftVertex.position, left);
         leftVertex.uv = {0.0f, accumulatedLength};
+        leftVertex.surfaceKind = kRibbonSurfaceRoad;
         leftVertex.color = kRibbonWireframeColor;
         ribbonMesh.vertices.push_back(leftVertex);
 
         RibbonVertex rightVertex = {};
         DirectX::XMStoreFloat3(&rightVertex.position, right);
         rightVertex.uv = {1.0f, accumulatedLength};
+        rightVertex.surfaceKind = kRibbonSurfaceRoad;
         rightVertex.color = kRibbonWireframeColor;
         ribbonMesh.vertices.push_back(rightVertex);
     }

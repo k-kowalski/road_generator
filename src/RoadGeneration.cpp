@@ -74,9 +74,8 @@ struct CurveSpan {
 };
 
 struct BoundaryRef {
-    std::uint32_t vertexIndex = 0;
     BoundaryGroupIndex boundaryGroupIndex = 0;
-    DirectX::XMFLOAT3 position = {};
+    RibbonVertex vertex = {};
     float angle = 0.0f;
 };
 
@@ -181,6 +180,17 @@ float BoundaryAngle(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& po
     return std::atan2(point.z - center.z, point.x - center.x);
 }
 
+DirectX::XMFLOAT2 LerpUv(const DirectX::XMFLOAT2& start, const DirectX::XMFLOAT2& end, float t) {
+    return {
+        Lerp(start.x, end.x, t),
+        Lerp(start.y, end.y, t),
+    };
+}
+
+DirectX::XMFLOAT2 AverageUv(const DirectX::XMFLOAT2& left, const DirectX::XMFLOAT2& right) {
+    return LerpUv(left, right, 0.5f);
+}
+
 DirectX::XMFLOAT3 SmoothTowardIntersection(
     const DirectX::XMFLOAT3& left,
     const DirectX::XMFLOAT3& center,
@@ -194,7 +204,7 @@ DirectX::XMFLOAT3 SmoothTowardIntersection(
     };
 }
 
-std::uint32_t AppendRibbonMesh(const RibbonMeshData& source, RibbonMeshData& destination) {
+void AppendRibbonMesh(const RibbonMeshData& source, RibbonMeshData& destination) {
     const std::uint32_t vertexOffset = static_cast<std::uint32_t>(destination.vertices.size());
     destination.vertices.insert(destination.vertices.end(), source.vertices.begin(), source.vertices.end());
     destination.indices.reserve(destination.indices.size() + source.indices.size());
@@ -202,8 +212,6 @@ std::uint32_t AppendRibbonMesh(const RibbonMeshData& source, RibbonMeshData& des
     for (std::uint32_t index : source.indices) {
         destination.indices.push_back(vertexOffset + index);
     }
-
-    return vertexOffset;
 }
 
 void CollectSpanBoundary(
@@ -211,7 +219,6 @@ void CollectSpanBoundary(
     BoundaryGroupIndex boundaryGroupIndex,
     bool seamAtStart,
     const RibbonMeshData& spanRibbonMesh,
-    std::uint32_t vertexOffset,
     std::vector<BoundaryRef>& boundaryRefs) {
     if (spanRibbonMesh.vertices.size() < 2) {
         return;
@@ -220,12 +227,11 @@ void CollectSpanBoundary(
     const std::uint32_t seamStartVertex =
         seamAtStart ? 0u : static_cast<std::uint32_t>(spanRibbonMesh.vertices.size() - 2);
     for (std::uint32_t localIndex = seamStartVertex; localIndex < seamStartVertex + 2; ++localIndex) {
-        const DirectX::XMFLOAT3& position = spanRibbonMesh.vertices[localIndex].position;
+        const RibbonVertex& seamVertex = spanRibbonMesh.vertices[localIndex];
         boundaryRefs.push_back({
-            vertexOffset + localIndex,
             boundaryGroupIndex,
-            position,
-            BoundaryAngle(nodePosition, position),
+            seamVertex,
+            BoundaryAngle(nodePosition, seamVertex.position),
         });
     }
 }
@@ -242,24 +248,22 @@ void AppendCenterPatch(
             return left.angle < right.angle;
         });
 
-    const std::uint32_t centerVertexIndex = static_cast<std::uint32_t>(ribbonMesh.vertices.size());
-    RibbonVertex centerVertex = {};
-    centerVertex.position = {
-        intersectionPoint.x,
-        intersectionPoint.y,
-        intersectionPoint.z,
-    };
-    centerVertex.uv = {0.5f, 0.5f};
-    centerVertex.color = kRibbonWireframeColor;
-    ribbonMesh.vertices.push_back(centerVertex);
-
     std::vector<std::uint32_t> patchRingIndices;
     patchRingIndices.reserve(sortedBoundaryRefs.size() * 2);
+    DirectX::XMFLOAT2 accumulatedPatchUv = {0.0f, 0.0f};
+    std::size_t accumulatedPatchUvCount = 0;
 
     for (BoundaryGroupIndex i = 0; i < sortedBoundaryRefs.size(); ++i) {
         const BoundaryRef& current = sortedBoundaryRefs[i];
         const BoundaryRef& next = sortedBoundaryRefs[(i + 1) % sortedBoundaryRefs.size()];
-        patchRingIndices.push_back(current.vertexIndex);
+        const std::uint32_t duplicatedBoundaryVertexIndex = static_cast<std::uint32_t>(ribbonMesh.vertices.size());
+        RibbonVertex duplicatedBoundaryVertex = current.vertex;
+        duplicatedBoundaryVertex.surfaceKind = kRibbonSurfaceIntersection;
+        ribbonMesh.vertices.push_back(duplicatedBoundaryVertex);
+        patchRingIndices.push_back(duplicatedBoundaryVertexIndex);
+        accumulatedPatchUv.x += duplicatedBoundaryVertex.uv.x;
+        accumulatedPatchUv.y += duplicatedBoundaryVertex.uv.y;
+        ++accumulatedPatchUvCount;
 
         if (current.boundaryGroupIndex == next.boundaryGroupIndex) {
             continue;
@@ -267,17 +271,40 @@ void AppendCenterPatch(
 
         RibbonVertex insertedVertex = {};
         insertedVertex.position = SmoothTowardIntersection(
-            current.position,
+            current.vertex.position,
             intersectionPoint,
-            next.position,
+            next.vertex.position,
             kCenterPatchIntersectionInfluence);
-        insertedVertex.uv = {0.5f, 0.5f};
+        insertedVertex.uv = AverageUv(current.vertex.uv, next.vertex.uv);
+        insertedVertex.surfaceKind = kRibbonSurfaceIntersection;
         insertedVertex.color = kRibbonWireframeColor;
 
         const std::uint32_t insertedVertexIndex = static_cast<std::uint32_t>(ribbonMesh.vertices.size());
         ribbonMesh.vertices.push_back(insertedVertex);
         patchRingIndices.push_back(insertedVertexIndex);
+        accumulatedPatchUv.x += insertedVertex.uv.x;
+        accumulatedPatchUv.y += insertedVertex.uv.y;
+        ++accumulatedPatchUvCount;
     }
+
+    const std::uint32_t centerVertexIndex = static_cast<std::uint32_t>(ribbonMesh.vertices.size());
+    RibbonVertex centerVertex = {};
+    centerVertex.position = {
+        intersectionPoint.x,
+        intersectionPoint.y,
+        intersectionPoint.z,
+    };
+    if (accumulatedPatchUvCount > 0) {
+        centerVertex.uv = {
+            accumulatedPatchUv.x / static_cast<float>(accumulatedPatchUvCount),
+            accumulatedPatchUv.y / static_cast<float>(accumulatedPatchUvCount),
+        };
+    } else {
+        centerVertex.uv = {0.5f, 0.5f};
+    }
+    centerVertex.surfaceKind = kRibbonSurfaceIntersection;
+    centerVertex.color = kRibbonWireframeColor;
+    ribbonMesh.vertices.push_back(centerVertex);
 
     ribbonMesh.indices.reserve(ribbonMesh.indices.size() + patchRingIndices.size() * 3);
     for (BoundaryGroupIndex i = 0; i < patchRingIndices.size(); ++i) {
@@ -733,14 +760,13 @@ std::optional<GenerateRoadIssue> GenerateRoad(
                 *issue};
         }
 
-        const std::uint32_t vertexOffset = AppendRibbonMesh(spanRibbonMesh, road.ribbonMesh);
+        AppendRibbonMesh(spanRibbonMesh, road.ribbonMesh);
         if (span.startBoundary.has_value()) {
             CollectSpanBoundary(
                 nodes[span.startBoundary->nodeId].position,
                 nextBoundaryGroupIndex++,
                 true,
                 spanRibbonMesh,
-                vertexOffset,
                 nodeBoundaryRefs[span.startBoundary->nodeId]);
         }
 
@@ -750,7 +776,6 @@ std::optional<GenerateRoadIssue> GenerateRoad(
                 nextBoundaryGroupIndex++,
                 false,
                 spanRibbonMesh,
-                vertexOffset,
                 nodeBoundaryRefs[span.endBoundary->nodeId]);
         }
     }

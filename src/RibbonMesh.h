@@ -30,10 +30,13 @@ struct RibbonMeshBuildIssue {
 };
 
 inline constexpr DirectX::XMFLOAT3 kRibbonWireframeColor = {1.0f, 0.10f, 0.70f};
+inline constexpr float kRibbonSurfaceRoad = 0.0f;
+inline constexpr float kRibbonSurfaceIntersection = 1.0f;
 
 struct RibbonVertex {
     DirectX::XMFLOAT3 position;
     DirectX::XMFLOAT2 uv;
+    float surfaceKind = kRibbonSurfaceRoad;
     DirectX::XMFLOAT3 color = kRibbonWireframeColor;
 };
 
