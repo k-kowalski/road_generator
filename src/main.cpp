@@ -32,8 +32,8 @@ namespace {
 constexpr UINT kFrameCount = 2;
 constexpr UINT kWindowWidth = 1280;
 constexpr UINT kWindowHeight = 720;
-constexpr wchar_t kWindowClassName[] = L"DX12RoadCurveWindow";
-constexpr wchar_t kWindowTitle[] = L"DX12 Road Curve";
+constexpr wchar_t kWindowClassName[] = L"RoadGenWindow";
+constexpr wchar_t kWindowTitle[] = L"RoadGen";
 constexpr float kRibbonHalfWidth = 0.20f;
 constexpr RibbonTangentMode kRibbonTangentMode = RibbonTangentMode::AverageSegmentDirections;
 constexpr float kTangentDebugYOffset = 0.14f;
@@ -176,7 +176,7 @@ D3D12_RESOURCE_BARRIER TransitionBarrier(
         std::snprintf(buffer, sizeof(buffer), "%s", message);
     }
     OutputDebugStringA(buffer);
-    MessageBoxA(nullptr, buffer, "DX12RoadCurve", MB_OK | MB_ICONERROR);
+    MessageBoxA(nullptr, buffer, "RoadGen", MB_OK | MB_ICONERROR);
     ExitProcess(1);
 }
 

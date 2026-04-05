@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(DX12ColoredCube LANGUAGES CXX)
+project(RoadGen LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_executable(DX12ColoredCube WIN32
+add_executable(RoadGen WIN32
     src/HalfEdgeMesh.cpp
     src/HalfEdgeMesh.h
     src/PolylineCurve.cpp
@@ -91,7 +91,7 @@ if(NOT FXC_RIBBON_PS_RESULT EQUAL 0)
     message(FATAL_ERROR "Ribbon pixel shader compilation failed during CMake configure.\n${FXC_RIBBON_PS_STDOUT}\n${FXC_RIBBON_PS_STDERR}")
 endif()
 
-target_compile_definitions(DX12ColoredCube PRIVATE
+target_compile_definitions(RoadGen PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     UNICODE
@@ -99,10 +99,10 @@ target_compile_definitions(DX12ColoredCube PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(DX12ColoredCube PRIVATE /W4 /EHsc)
+    target_compile_options(RoadGen PRIVATE /W4 /EHsc)
 endif()
 
-target_link_libraries(DX12ColoredCube PRIVATE
+target_link_libraries(RoadGen PRIVATE
     d3d12
     dxgi
     dxguid
@@ -110,26 +110,26 @@ target_link_libraries(DX12ColoredCube PRIVATE
     gdi32
 )
 
-add_custom_command(TARGET DX12ColoredCube POST_BUILD
+add_custom_command(TARGET RoadGen POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -f
-        "$<TARGET_FILE_DIR:DX12ColoredCube>/cube.hlsl"
-        "$<TARGET_FILE_DIR:DX12ColoredCube>/ribbon.hlsl"
+        "$<TARGET_FILE_DIR:RoadGen>/cube.hlsl"
+        "$<TARGET_FILE_DIR:RoadGen>/ribbon.hlsl"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${LINE_VERTEX_SHADER_OUTPUT}"
-        "$<TARGET_FILE_DIR:DX12ColoredCube>/cube_vs.cso"
+        "$<TARGET_FILE_DIR:RoadGen>/cube_vs.cso"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${LINE_PIXEL_SHADER_OUTPUT}"
-        "$<TARGET_FILE_DIR:DX12ColoredCube>/cube_ps.cso"
+        "$<TARGET_FILE_DIR:RoadGen>/cube_ps.cso"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${RIBBON_VERTEX_SHADER_OUTPUT}"
-        "$<TARGET_FILE_DIR:DX12ColoredCube>/ribbon_vs.cso"
+        "$<TARGET_FILE_DIR:RoadGen>/ribbon_vs.cso"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${RIBBON_PIXEL_SHADER_OUTPUT}"
-        "$<TARGET_FILE_DIR:DX12ColoredCube>/ribbon_ps.cso"
+        "$<TARGET_FILE_DIR:RoadGen>/ribbon_ps.cso"
 )
 
-set_target_properties(DX12ColoredCube PROPERTIES
-    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:DX12ColoredCube>"
+set_target_properties(RoadGen PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:RoadGen>"
 )
 
-set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT DX12ColoredCube)
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT RoadGen)
