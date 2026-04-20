@@ -1,7 +1,5 @@
 #include "RibbonMesh.h"
 
-#include <DirectXMath.h>
-
 #include <cmath>
 
 namespace {
@@ -9,110 +7,132 @@ namespace {
 constexpr float kMinimumVectorLengthSquared = 1.0e-8f;
 constexpr float kMinimumMiterDenominator = 1.0e-4f;
 constexpr float kMaximumMiterScale = 4.0f;
+constexpr Float3 kUp = {0.0f, 1.0f, 0.0f};
 
-DirectX::XMVECTOR LoadPoint(const DirectX::XMFLOAT3& point) {
-    return DirectX::XMLoadFloat3(&point);
+Float3 Subtract(const Float3& left, const Float3& right) {
+    return {left.x - right.x, left.y - right.y, left.z - right.z};
 }
 
-bool NormalizeVector(DirectX::FXMVECTOR vector, DirectX::XMVECTOR& normalizedVector) {
-    const float lengthSquared = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(vector));
+Float3 Add(const Float3& left, const Float3& right) {
+    return {left.x + right.x, left.y + right.y, left.z + right.z};
+}
+
+Float3 Scale(const Float3& value, float scalar) {
+    return {value.x * scalar, value.y * scalar, value.z * scalar};
+}
+
+float Dot(const Float3& left, const Float3& right) {
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+Float3 Cross(const Float3& left, const Float3& right) {
+    return {
+        left.y * right.z - left.z * right.y,
+        left.z * right.x - left.x * right.z,
+        left.x * right.y - left.y * right.x,
+    };
+}
+
+float LengthSquared(const Float3& value) {
+    return Dot(value, value);
+}
+
+float Length(const Float3& value) {
+    return std::sqrt(LengthSquared(value));
+}
+
+bool NormalizeVector(const Float3& vector, Float3& normalizedVector) {
+    const float lengthSquared = LengthSquared(vector);
     if (lengthSquared <= kMinimumVectorLengthSquared) {
         return false;
     }
 
-    normalizedVector = DirectX::XMVectorScale(vector, 1.0f / std::sqrt(lengthSquared));
+    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+    normalizedVector = Scale(vector, inverseLength);
     return true;
 }
 
 bool ComputeCentralDifferenceTangent(
-    const std::vector<DirectX::XMFLOAT3>& controlPoints,
+    const std::vector<Float3>& controlPoints,
     SampleIndex sampleIndex,
-    DirectX::XMVECTOR& tangent) {
-    DirectX::XMVECTOR rawTangent;
+    Float3& tangent) {
+    Float3 rawTangent = {};
     if (sampleIndex == 0) {
-        rawTangent = DirectX::XMVectorSubtract(LoadPoint(controlPoints[1]), LoadPoint(controlPoints[0]));
+        rawTangent = Subtract(controlPoints[1], controlPoints[0]);
     } else if (sampleIndex + 1 == controlPoints.size()) {
-        rawTangent = DirectX::XMVectorSubtract(
-            LoadPoint(controlPoints[sampleIndex]),
-            LoadPoint(controlPoints[sampleIndex - 1]));
+        rawTangent = Subtract(controlPoints[sampleIndex], controlPoints[sampleIndex - 1]);
     } else {
-        rawTangent = DirectX::XMVectorSubtract(
-            LoadPoint(controlPoints[sampleIndex + 1]),
-            LoadPoint(controlPoints[sampleIndex - 1]));
+        rawTangent = Subtract(controlPoints[sampleIndex + 1], controlPoints[sampleIndex - 1]);
     }
 
     return NormalizeVector(rawTangent, tangent);
 }
 
 bool ComputeAverageSegmentDirectionsTangent(
-    const std::vector<DirectX::XMFLOAT3>& controlPoints,
+    const std::vector<Float3>& controlPoints,
     SampleIndex sampleIndex,
-    DirectX::XMVECTOR& tangent) {
+    Float3& tangent) {
     if (sampleIndex == 0) {
         return NormalizeVector(
-            DirectX::XMVectorSubtract(LoadPoint(controlPoints[1]), LoadPoint(controlPoints[0])),
+            Subtract(controlPoints[1], controlPoints[0]),
             tangent);
     }
 
     if (sampleIndex + 1 == controlPoints.size()) {
         return NormalizeVector(
-            DirectX::XMVectorSubtract(LoadPoint(controlPoints[sampleIndex]), LoadPoint(controlPoints[sampleIndex - 1])),
+            Subtract(controlPoints[sampleIndex], controlPoints[sampleIndex - 1]),
             tangent);
     }
 
-    DirectX::XMVECTOR previousDirection;
+    Float3 previousDirection = {};
     if (!NormalizeVector(
-            DirectX::XMVectorSubtract(LoadPoint(controlPoints[sampleIndex]), LoadPoint(controlPoints[sampleIndex - 1])),
+            Subtract(controlPoints[sampleIndex], controlPoints[sampleIndex - 1]),
             previousDirection)) {
         return false;
     }
 
-    DirectX::XMVECTOR nextDirection;
+    Float3 nextDirection = {};
     if (!NormalizeVector(
-            DirectX::XMVectorSubtract(LoadPoint(controlPoints[sampleIndex + 1]), LoadPoint(controlPoints[sampleIndex])),
+            Subtract(controlPoints[sampleIndex + 1], controlPoints[sampleIndex]),
             nextDirection)) {
         return false;
     }
 
-    return NormalizeVector(DirectX::XMVectorAdd(previousDirection, nextDirection), tangent);
+    return NormalizeVector(Add(previousDirection, nextDirection), tangent);
 }
 
 std::optional<RibbonMeshBuildIssue> ComputeSegmentSides(
     const PolylineCurve& curve,
-    std::vector<DirectX::XMFLOAT3>& segmentSides) {
+    std::vector<Float3>& segmentSides) {
     segmentSides.clear();
 
     const SampleIndex segmentCount = curve.controlPoints.size() - 1;
     segmentSides.reserve(segmentCount);
 
-    const DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-
     for (SampleIndex i = 0; i < segmentCount; ++i) {
-        DirectX::XMVECTOR direction;
+        Float3 direction = {};
         if (!NormalizeVector(
-                DirectX::XMVectorSubtract(LoadPoint(curve.controlPoints[i + 1]), LoadPoint(curve.controlPoints[i])),
+                Subtract(curve.controlPoints[i + 1], curve.controlPoints[i]),
                 direction)) {
             return RibbonMeshBuildIssue{RibbonMeshBuildError::DegenerateTangent, i};
         }
 
-        DirectX::XMVECTOR side;
-        if (!NormalizeVector(DirectX::XMVector3Cross(up, direction), side)) {
+        Float3 side = {};
+        if (!NormalizeVector(Cross(kUp, direction), side)) {
             return RibbonMeshBuildIssue{RibbonMeshBuildError::DegenerateTangent, i};
         }
 
-        DirectX::XMFLOAT3 sideValue = {};
-        DirectX::XMStoreFloat3(&sideValue, side);
-        segmentSides.push_back(sideValue);
+        segmentSides.push_back(side);
     }
 
     return std::nullopt;
 }
 
 bool ComputeCurveTangent(
-    const std::vector<DirectX::XMFLOAT3>& controlPoints,
+    const std::vector<Float3>& controlPoints,
     SampleIndex sampleIndex,
     RibbonTangentMode tangentMode,
-    DirectX::XMVECTOR& tangent) {
+    Float3& tangent) {
     switch (tangentMode) {
     case RibbonTangentMode::AverageSegmentDirections:
         return ComputeAverageSegmentDirectionsTangent(controlPoints, sampleIndex, tangent);
@@ -123,22 +143,21 @@ bool ComputeCurveTangent(
     }
 }
 
-float SegmentLength(const DirectX::XMFLOAT3& start, const DirectX::XMFLOAT3& end) {
-    const DirectX::XMVECTOR delta = DirectX::XMVectorSubtract(LoadPoint(end), LoadPoint(start));
-    return DirectX::XMVectorGetX(DirectX::XMVector3Length(delta));
+float SegmentLength(const Float3& start, const Float3& end) {
+    return Length(Subtract(end, start));
 }
 
 bool TryComputeMiterOffset(
-    DirectX::FXMVECTOR previousSide,
-    DirectX::FXMVECTOR nextSide,
+    const Float3& previousSide,
+    const Float3& nextSide,
     float halfWidth,
-    DirectX::XMVECTOR& offset) {
-    DirectX::XMVECTOR miter;
-    if (!NormalizeVector(DirectX::XMVectorAdd(previousSide, nextSide), miter)) {
+    Float3& offset) {
+    Float3 miter = {};
+    if (!NormalizeVector(Add(previousSide, nextSide), miter)) {
         return false;
     }
 
-    const float denominator = DirectX::XMVectorGetX(DirectX::XMVector3Dot(miter, nextSide));
+    const float denominator = Dot(miter, nextSide);
     if (denominator <= kMinimumMiterDenominator) {
         return false;
     }
@@ -148,7 +167,7 @@ bool TryComputeMiterOffset(
         return false;
     }
 
-    offset = DirectX::XMVectorScale(miter, miterLength);
+    offset = Scale(miter, miterLength);
     return true;
 }
 
@@ -157,7 +176,7 @@ bool TryComputeMiterOffset(
 std::optional<RibbonMeshBuildIssue> ComputeCurveTangents(
     const PolylineCurve& curve,
     RibbonTangentMode tangentMode,
-    std::vector<DirectX::XMFLOAT3>& tangents) {
+    std::vector<Float3>& tangents) {
     tangents.clear();
 
     const std::size_t sampleCount = curve.controlPoints.size();
@@ -168,15 +187,13 @@ std::optional<RibbonMeshBuildIssue> ComputeCurveTangents(
     tangents.reserve(sampleCount);
 
     for (std::size_t i = 0; i < sampleCount; ++i) {
-        DirectX::XMVECTOR tangent;
+        Float3 tangent = {};
         if (!ComputeCurveTangent(curve.controlPoints, i, tangentMode, tangent)) {
             tangents.clear();
             return RibbonMeshBuildIssue{RibbonMeshBuildError::DegenerateTangent, i};
         }
 
-        DirectX::XMFLOAT3 tangentValue = {};
-        DirectX::XMStoreFloat3(&tangentValue, tangent);
-        tangents.push_back(tangentValue);
+        tangents.push_back(tangent);
     }
 
     return std::nullopt;
@@ -199,12 +216,12 @@ std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
         return RibbonMeshBuildIssue{RibbonMeshBuildError::NonPositiveHalfWidth, 0};
     }
 
-    std::vector<DirectX::XMFLOAT3> segmentSides;
+    std::vector<Float3> segmentSides;
     if (const auto issue = ComputeSegmentSides(curve, segmentSides)) {
         return issue;
     }
 
-    std::vector<DirectX::XMFLOAT3> tangents;
+    std::vector<Float3> tangents;
     if (const auto issue = ComputeCurveTangents(curve, tangentMode, tangents)) {
         return issue;
     }
@@ -212,45 +229,39 @@ std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
     ribbonMesh.vertices.reserve(sampleCount * 2);
     ribbonMesh.indices.reserve((sampleCount - 1) * 6);
 
-    const DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     float accumulatedLength = 0.0f;
 
     for (std::size_t i = 0; i < sampleCount; ++i) {
-        DirectX::XMVECTOR offset;
+        Float3 offset = {};
         if (i == 0) {
-            offset = DirectX::XMVectorScale(LoadPoint(segmentSides.front()), halfWidth);
+            offset = Scale(segmentSides.front(), halfWidth);
         } else if (i + 1 == sampleCount) {
-            offset = DirectX::XMVectorScale(LoadPoint(segmentSides.back()), halfWidth);
-        } else {
-            const DirectX::XMVECTOR previousSide = LoadPoint(segmentSides[i - 1]);
-            const DirectX::XMVECTOR nextSide = LoadPoint(segmentSides[i]);
-            if (!TryComputeMiterOffset(previousSide, nextSide, halfWidth, offset)) {
-                const DirectX::XMVECTOR tangent = LoadPoint(tangents[i]);
-                DirectX::XMVECTOR fallbackSide;
-                if (!NormalizeVector(DirectX::XMVector3Cross(up, tangent), fallbackSide)) {
-                    return RibbonMeshBuildIssue{RibbonMeshBuildError::DegenerateTangent, i};
-                }
-                offset = DirectX::XMVectorScale(fallbackSide, halfWidth);
+            offset = Scale(segmentSides.back(), halfWidth);
+        } else if (!TryComputeMiterOffset(segmentSides[i - 1], segmentSides[i], halfWidth, offset)) {
+            Float3 fallbackSide = {};
+            if (!NormalizeVector(Cross(kUp, tangents[i]), fallbackSide)) {
+                return RibbonMeshBuildIssue{RibbonMeshBuildError::DegenerateTangent, i};
             }
+            offset = Scale(fallbackSide, halfWidth);
         }
 
         if (i > 0) {
             accumulatedLength += SegmentLength(curve.controlPoints[i - 1], curve.controlPoints[i]);
         }
 
-        const DirectX::XMVECTOR center = LoadPoint(curve.controlPoints[i]);
-        const DirectX::XMVECTOR left = DirectX::XMVectorSubtract(center, offset);
-        const DirectX::XMVECTOR right = DirectX::XMVectorAdd(center, offset);
+        const Float3 center = curve.controlPoints[i];
+        const Float3 left = Subtract(center, offset);
+        const Float3 right = Add(center, offset);
 
         RibbonVertex leftVertex = {};
-        DirectX::XMStoreFloat3(&leftVertex.position, left);
+        leftVertex.position = left;
         leftVertex.uv = {0.0f, accumulatedLength};
         leftVertex.surfaceKind = kRibbonSurfaceRoad;
         leftVertex.color = kRibbonWireframeColor;
         ribbonMesh.vertices.push_back(leftVertex);
 
         RibbonVertex rightVertex = {};
-        DirectX::XMStoreFloat3(&rightVertex.position, right);
+        rightVertex.position = right;
         rightVertex.uv = {1.0f, accumulatedLength};
         rightVertex.surfaceKind = kRibbonSurfaceRoad;
         rightVertex.color = kRibbonWireframeColor;

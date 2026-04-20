@@ -6,21 +6,19 @@
 namespace {
 
 struct SegmentCircleHit {
-    DirectX::XMFLOAT3 position = {};
+    Float3 position = {};
     SegmentIndex segmentIndex = 0;
     float segmentT = 0.0f;
 };
 
-float DistanceSquared(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT3& right) {
+float DistanceSquared(const Float3& left, const Float3& right) {
     const float dx = left.x - right.x;
     const float dy = left.y - right.y;
     const float dz = left.z - right.z;
     return dx * dx + dy * dy + dz * dz;
 }
 
-DirectX::XMFLOAT3 NormalizeDirection(
-    const DirectX::XMFLOAT3& start,
-    const DirectX::XMFLOAT3& end) {
+Float3 NormalizeDirection(const Float3& start, const Float3& end) {
     const float dx = end.x - start.x;
     const float dy = end.y - start.y;
     const float dz = end.z - start.z;
@@ -61,7 +59,7 @@ float Lerp(float start, float end, float t) {
     return start + (end - start) * t;
 }
 
-DirectX::XMFLOAT3 LerpPoint(const DirectX::XMFLOAT3& start, const DirectX::XMFLOAT3& end, float t) {
+Float3 LerpPoint(const Float3& start, const Float3& end, float t) {
     return {
         Lerp(start.x, end.x, t),
         Lerp(start.y, end.y, t),
@@ -69,7 +67,7 @@ DirectX::XMFLOAT3 LerpPoint(const DirectX::XMFLOAT3& start, const DirectX::XMFLO
     };
 }
 
-DirectX::XMFLOAT3 Midpoint(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT3& right) {
+Float3 Midpoint(const Float3& left, const Float3& right) {
     return {
         0.5f * (left.x + right.x),
         0.5f * (left.y + right.y),
@@ -77,10 +75,10 @@ DirectX::XMFLOAT3 Midpoint(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT
     };
 }
 
-DirectX::XMFLOAT3 SmoothInteriorPoint(
-    const DirectX::XMFLOAT3& left,
-    const DirectX::XMFLOAT3& center,
-    const DirectX::XMFLOAT3& right) {
+Float3 SmoothInteriorPoint(
+    const Float3& left,
+    const Float3& center,
+    const Float3& right) {
     return {
         0.25f * left.x + 0.50f * center.x + 0.25f * right.x,
         0.25f * left.y + 0.50f * center.y + 0.25f * right.y,
@@ -118,8 +116,8 @@ void SortAndDeduplicateHits(
 }
 
 void AppendTrimEndpoint(
-    std::vector<DirectX::XMFLOAT3>& points,
-    const DirectX::XMFLOAT3& trimPoint,
+    std::vector<Float3>& points,
+    const Float3& trimPoint,
     float mergeDistanceSquared) {
     if (!points.empty() && DistanceSquared(points.back(), trimPoint) <= mergeDistanceSquared) {
         return;
@@ -169,12 +167,15 @@ TrimmedCurveBranch BuildTrimmedSuffix(
 
 } // namespace
 
-Vector2f ProjectPointXZ(const DirectX::XMFLOAT3& point) {
+Vector2f ProjectPointXZ(const Float3& point) {
     return {point.x, point.z};
 }
 
-std::optional<CurveTrimResult> TrimCurvesCircle(const PolylineCurve& curve1, const PolylineCurve& curve2, const Vector2f& center, float radius)
-{
+std::optional<CurveTrimResult> TrimCurvesCircle(
+    const PolylineCurve& curve1,
+    const PolylineCurve& curve2,
+    const Vector2f& center,
+    float radius) {
     if (curve1.controlPoints.size() < 2 || curve2.controlPoints.size() < 2) {
         return std::nullopt;
     }
@@ -190,7 +191,7 @@ std::optional<CurveTrimResult> TrimCurvesCircle(const PolylineCurve& curve1, con
     const float trimEndpointMergeDistanceSquared =
         trimEndpointMergeDistance * trimEndpointMergeDistance;
 
-    auto intersectSegmentCircle = [&](const DirectX::XMFLOAT3& start, const DirectX::XMFLOAT3& end, SegmentIndex segmentIndex) {
+    auto intersectSegmentCircle = [&](const Float3& start, const Float3& end, SegmentIndex segmentIndex) {
         std::vector<SegmentCircleHit> hits;
         const Vector2f startGround = ProjectPointXZ(start);
         const Vector2f endGround = ProjectPointXZ(end);
@@ -284,10 +285,10 @@ std::optional<CurveTrimResult> TrimCurvesCircle(const PolylineCurve& curve1, con
 }
 
 std::optional<SegmentIntersection> IntersectSegments(
-    const DirectX::XMFLOAT3& a,
-    const DirectX::XMFLOAT3& b,
-    const DirectX::XMFLOAT3& c,
-    const DirectX::XMFLOAT3& d,
+    const Float3& a,
+    const Float3& b,
+    const Float3& c,
+    const Float3& d,
     float epsilon) {
     const Vector2f aGround = ProjectPointXZ(a);
     const Vector2f bGround = ProjectPointXZ(b);
@@ -349,8 +350,6 @@ PolylineCurve SubdividePolylineCurveTowardsBezierLimit(const PolylineCurve& curv
 
     PolylineCurve smoothedCurve = subdividedCurve;
 
-    // A single 1-2-1 smoothing pass preserves the fixed ends and keeps inserted
-    // edge points centered while nudging interior vertices toward the limit curve.
     for (SegmentIndex i = 1; i + 1 < subdividedCurve.controlPoints.size(); ++i) {
         smoothedCurve.controlPoints[i] = SmoothInteriorPoint(
             subdividedCurve.controlPoints[i - 1],
@@ -371,7 +370,7 @@ std::optional<PolylineCurveValidationError> ValidatePolylineCurve(
     const float duplicateToleranceSquared = groundTolerance * groundTolerance;
 
     for (SegmentIndex i = 0; i < curve.controlPoints.size(); ++i) {
-        const DirectX::XMFLOAT3& point = curve.controlPoints[i];
+        const Float3& point = curve.controlPoints[i];
         if (std::fabs(point.y) > groundTolerance) {
             return PolylineCurveValidationError::PointOffGroundPlane;
         }
@@ -384,11 +383,11 @@ std::optional<PolylineCurveValidationError> ValidatePolylineCurve(
     return std::nullopt;
 }
 
-std::vector<DirectX::XMFLOAT3> IntersectCurves(
+std::vector<Float3> IntersectCurves(
     const PolylineCurve& curve1,
     const PolylineCurve& curve2,
     float epsilon) {
-    std::vector<DirectX::XMFLOAT3> points;
+    std::vector<Float3> points;
     const float duplicateToleranceSquared = epsilon * epsilon;
 
     if (curve1.controlPoints.size() < 2 || curve2.controlPoints.size() < 2) {
@@ -408,7 +407,7 @@ std::vector<DirectX::XMFLOAT3> IntersectCurves(
             }
 
             bool alreadyRecorded = false;
-            for (const DirectX::XMFLOAT3& point : points) {
+            for (const Float3& point : points) {
                 if (DistanceSquared(point, intersection->position) <= duplicateToleranceSquared) {
                     alreadyRecorded = true;
                     break;

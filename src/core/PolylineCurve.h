@@ -1,10 +1,11 @@
 #pragma once
 
-#include <DirectXMath.h>
-
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
+
+#include "MathTypes.h"
 
 using CurveIndex = std::size_t;
 using SegmentIndex = std::size_t;
@@ -16,19 +17,19 @@ enum class PolylineCurveValidationError : std::uint32_t {
 };
 
 struct PolylineCurve {
-    std::vector<DirectX::XMFLOAT3> controlPoints;
+    std::vector<Float3> controlPoints;
 };
 
 struct SegmentIntersection {
-    DirectX::XMFLOAT3 position;
+    Float3 position;
     float firstSegmentT;
     float secondSegmentT;
 };
 
 struct TrimmedCurveBranch {
     PolylineCurve curve;
-    DirectX::XMFLOAT3 trimPoint = {};
-    DirectX::XMFLOAT3 tangentAwayFromIntersection = {};
+    Float3 trimPoint = {};
+    Float3 tangentAwayFromIntersection = {};
 };
 
 struct CurveTrimResult {
@@ -46,18 +47,18 @@ struct Vector2f {
 std::optional<CurveTrimResult> TrimCurvesCircle(const PolylineCurve& curve1, const PolylineCurve& curve2, const Vector2f& center, float radius);
 
 std::optional<SegmentIntersection> IntersectSegments(
-    const DirectX::XMFLOAT3& a,
-    const DirectX::XMFLOAT3& b,
-    const DirectX::XMFLOAT3& c,
-    const DirectX::XMFLOAT3& d,
+    const Float3& a,
+    const Float3& b,
+    const Float3& c,
+    const Float3& d,
     float epsilon = 1.0e-6f);
 
-std::vector<DirectX::XMFLOAT3> IntersectCurves(
+std::vector<Float3> IntersectCurves(
     const PolylineCurve& curve1,
     const PolylineCurve& curve2,
     float epsilon = 1.0e-6f);
 
-Vector2f ProjectPointXZ(const DirectX::XMFLOAT3& point);
+Vector2f ProjectPointXZ(const Float3& point);
 
 PolylineCurve MakeDefaultPolylineCurve();
 

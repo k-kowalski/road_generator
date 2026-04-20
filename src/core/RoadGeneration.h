@@ -1,13 +1,12 @@
 #pragma once
 
-#include <DirectXMath.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "MathTypes.h"
 #include "PolylineCurve.h"
 #include "RibbonMesh.h"
 
@@ -30,7 +29,7 @@ struct GenerateRoadIssue {
 };
 
 struct RoadJunctionInfo {
-    DirectX::XMFLOAT3 position = {};
+    Float3 position = {};
     std::size_t incidentCount = 0;
 };
 

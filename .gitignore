@@ -1,4 +1,5 @@
 build/
+build-web/
 .vs/
 *.user
 *.suo
@@ -6,3 +7,5 @@ build/
 *.ilk
 docs/
 halfedge/
+web/dist/
+tools/emsdk/

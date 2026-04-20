@@ -1,13 +1,12 @@
 #pragma once
 
-#include <DirectXMath.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "MathTypes.h"
 #include "PolylineCurve.h"
 
 using SampleIndex = std::size_t;
@@ -29,15 +28,15 @@ struct RibbonMeshBuildIssue {
     SampleIndex sampleIndex = 0;
 };
 
-inline constexpr DirectX::XMFLOAT3 kRibbonWireframeColor = {1.0f, 0.10f, 0.70f};
+inline constexpr Float3 kRibbonWireframeColor = {1.0f, 0.10f, 0.70f};
 inline constexpr float kRibbonSurfaceRoad = 0.0f;
 inline constexpr float kRibbonSurfaceIntersection = 1.0f;
 
 struct RibbonVertex {
-    DirectX::XMFLOAT3 position;
-    DirectX::XMFLOAT2 uv;
+    Float3 position;
+    Float2 uv;
     float surfaceKind = kRibbonSurfaceRoad;
-    DirectX::XMFLOAT3 color = kRibbonWireframeColor;
+    Float3 color = kRibbonWireframeColor;
 };
 
 struct RibbonMeshData {
@@ -48,7 +47,7 @@ struct RibbonMeshData {
 std::optional<RibbonMeshBuildIssue> ComputeCurveTangents(
     const PolylineCurve& curve,
     RibbonTangentMode tangentMode,
-    std::vector<DirectX::XMFLOAT3>& tangents);
+    std::vector<Float3>& tangents);
 
 std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
     const PolylineCurve& curve,

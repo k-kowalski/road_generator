@@ -7,9 +7,7 @@
 
 #include <DirectXMath.h>
 
-#include "PolylineCurve.h"
-#include "RoadGeneration.h"
-#include "RibbonMesh.h"
+#include "RoadDemo.h"
 
 #include <algorithm>
 #include <atomic>
@@ -34,56 +32,18 @@ constexpr UINT kWindowWidth = 1280;
 constexpr UINT kWindowHeight = 720;
 constexpr wchar_t kWindowClassName[] = L"RoadGenWindow";
 constexpr wchar_t kWindowTitle[] = L"RoadGen";
-constexpr float kRibbonHalfWidth = 0.20f;
-constexpr RibbonTangentMode kRibbonTangentMode = RibbonTangentMode::AverageSegmentDirections;
-constexpr float kTangentDebugYOffset = 0.14f;
-constexpr float kTangentDebugLength = 0.28f;
 struct OrbitCamera {
     float yaw = DirectX::XM_PI;
     float pitch = 0.48f;
     float distance = 8.4f;
-    DirectX::XMFLOAT3 target = {0.0f, 0.15f, 0.0f};
+    Float3 target = {0.0f, 0.15f, 0.0f};
 };
 
 struct SceneConstants {
     DirectX::XMFLOAT4X4 mvp;
 };
 
-struct DebugVertex {
-    DirectX::XMFLOAT3 position;
-    DirectX::XMFLOAT3 color;
-};
-
-struct DrawRange {
-    UINT startVertex = 0;
-    UINT vertexCount = 0;
-};
-
-struct CurveDebugStyle {
-    DirectX::XMFLOAT3 segmentColor;
-    DirectX::XMFLOAT3 markerColor;
-    float yOffset = 0.0f;
-    float baseHalfSpan = 0.08f;
-    float stemHeight = 0.18f;
-    float crownHalfSpan = 0.05f;
-};
-
-struct ProcessedCurveData {
-    CurveIndex authoredIndex = 0;
-    PolylineCurve curve;
-    std::vector<DirectX::XMFLOAT3> tangents;
-};
-
-struct SceneGeometryCpuData {
-    std::vector<DebugVertex> lineVertices;
-    DrawRange gridRange = {};
-    DrawRange roughCurveRange = {};
-    DrawRange roughControlPointRange = {};
-    DrawRange subdividedCurveRange = {};
-    DrawRange subdividedTangentRange = {};
-    std::vector<RibbonVertex> ribbonVertices;
-    std::vector<std::uint32_t> ribbonIndices;
-};
+using SceneGeometryCpuData = RoadDemoSceneGeometry;
 
 struct RenderStateSnapshot {
     OrbitCamera camera = {};
@@ -99,13 +59,6 @@ UINT AlignTo(UINT value, UINT alignment) {
 
 float ClampFloat(float value, float minValue, float maxValue) {
     return std::clamp(value, minValue, maxValue);
-}
-
-float DistanceSquared(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT3& right) {
-    const float dx = left.x - right.x;
-    const float dy = left.y - right.y;
-    const float dz = left.z - right.z;
-    return dx * dx + dy * dy + dz * dz;
 }
 
 D3D12_BLEND_DESC OpaqueBlendDesc() {
@@ -220,147 +173,16 @@ std::vector<std::uint8_t> ReadBinaryFile(const std::wstring& path) {
     return data;
 }
 
-DirectX::XMFLOAT3 OffsetPoint(const DirectX::XMFLOAT3& point, float dx, float dy, float dz) {
-    return {point.x + dx, point.y + dy, point.z + dz};
+DirectX::XMVECTOR LoadFloat3(const Float3& value, float w = 0.0f) {
+    return DirectX::XMVectorSet(value.x, value.y, value.z, w);
 }
 
-DirectX::XMFLOAT3 LiftPoint(const DirectX::XMFLOAT3& point, float yOffset) {
-    return OffsetPoint(point, 0.0f, yOffset, 0.0f);
-}
-
-CurveDebugStyle RoughCurveStyle(CurveIndex curveIndex) {
-    static constexpr CurveDebugStyle kStyles[] = {
-        {{0.95f, 0.56f, 0.21f}, {1.00f, 0.76f, 0.46f}, 0.02f, 0.09f, 0.20f, 0.06f},
-        {{0.18f, 0.84f, 0.90f}, {0.72f, 0.98f, 1.00f}, 0.02f, 0.06f, 0.14f, 0.03f},
-        {{0.44f, 0.82f, 0.28f}, {0.73f, 0.96f, 0.62f}, 0.02f, 0.07f, 0.17f, 0.05f},
-        {{0.96f, 0.34f, 0.58f}, {1.00f, 0.70f, 0.82f}, 0.02f, 0.07f, 0.17f, 0.05f},
+Float3 StoreFloat3(DirectX::FXMVECTOR value) {
+    return {
+        DirectX::XMVectorGetX(value),
+        DirectX::XMVectorGetY(value),
+        DirectX::XMVectorGetZ(value),
     };
-    return kStyles[curveIndex % _countof(kStyles)];
-}
-
-CurveDebugStyle SubdividedCurveStyle(CurveIndex curveIndex) {
-    static constexpr CurveDebugStyle kStyles[] = {
-        {{1.00f, 0.78f, 0.42f}, {1.00f, 0.88f, 0.64f}, 0.08f, 0.06f, 0.14f, 0.03f},
-        {{0.46f, 0.92f, 0.98f}, {0.78f, 1.00f, 1.00f}, 0.08f, 0.06f, 0.14f, 0.03f},
-        {{0.66f, 0.92f, 0.46f}, {0.84f, 1.00f, 0.72f}, 0.08f, 0.06f, 0.14f, 0.03f},
-        {{1.00f, 0.56f, 0.76f}, {1.00f, 0.80f, 0.90f}, 0.08f, 0.06f, 0.14f, 0.03f},
-    };
-    return kStyles[curveIndex % _countof(kStyles)];
-}
-
-void AppendLine(
-    std::vector<DebugVertex>& vertices,
-    const DirectX::XMFLOAT3& start,
-    const DirectX::XMFLOAT3& end,
-    const DirectX::XMFLOAT3& color) {
-    vertices.push_back({start, color});
-    vertices.push_back({end, color});
-}
-
-DrawRange BuildGroundGrid(std::vector<DebugVertex>& vertices) {
-    DrawRange range = {};
-    range.startVertex = static_cast<UINT>(vertices.size());
-
-    constexpr float kGridExtent = 8.0f;
-    constexpr float kGridSpacing = 0.5f;
-    constexpr int kGridHalfSteps = 16;
-    const DirectX::XMFLOAT3 gridColor = {0.24f, 0.29f, 0.36f};
-    const DirectX::XMFLOAT3 axisColor = {0.36f, 0.43f, 0.52f};
-
-    for (int step = -kGridHalfSteps; step <= kGridHalfSteps; ++step) {
-        const float coordinate = static_cast<float>(step) * kGridSpacing;
-        const DirectX::XMFLOAT3 color = (step == 0) ? axisColor : gridColor;
-
-        AppendLine(vertices, {-kGridExtent, 0.0f, coordinate}, {kGridExtent, 0.0f, coordinate}, color);
-        AppendLine(vertices, {coordinate, 0.0f, -kGridExtent}, {coordinate, 0.0f, kGridExtent}, color);
-    }
-
-    range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
-    return range;
-}
-
-DrawRange BuildCurveSegments(
-    const PolylineCurve& curve,
-    const CurveDebugStyle& style,
-    std::vector<DebugVertex>& vertices) {
-    DrawRange range = {};
-    range.startVertex = static_cast<UINT>(vertices.size());
-
-    for (std::size_t i = 1; i < curve.controlPoints.size(); ++i) {
-        AppendLine(
-            vertices,
-            LiftPoint(curve.controlPoints[i - 1], style.yOffset),
-            LiftPoint(curve.controlPoints[i], style.yOffset),
-            style.segmentColor);
-    }
-
-    range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
-    return range;
-}
-
-DrawRange BuildControlPointMarkers(
-    const PolylineCurve& curve,
-    const CurveDebugStyle& style,
-    std::vector<DebugVertex>& vertices) {
-    DrawRange range = {};
-    range.startVertex = static_cast<UINT>(vertices.size());
-
-    for (const DirectX::XMFLOAT3& point : curve.controlPoints) {
-        const DirectX::XMFLOAT3 liftedPoint = LiftPoint(point, style.yOffset);
-        const DirectX::XMFLOAT3 crown = OffsetPoint(liftedPoint, 0.0f, style.stemHeight, 0.0f);
-        AppendLine(
-            vertices,
-            OffsetPoint(liftedPoint, -style.baseHalfSpan, 0.0f, 0.0f),
-            OffsetPoint(liftedPoint, style.baseHalfSpan, 0.0f, 0.0f),
-            style.markerColor);
-        AppendLine(
-            vertices,
-            OffsetPoint(liftedPoint, 0.0f, 0.0f, -style.baseHalfSpan),
-            OffsetPoint(liftedPoint, 0.0f, 0.0f, style.baseHalfSpan),
-            style.markerColor);
-        AppendLine(vertices, liftedPoint, crown, style.markerColor);
-        AppendLine(
-            vertices,
-            OffsetPoint(crown, -style.crownHalfSpan, 0.0f, 0.0f),
-            OffsetPoint(crown, style.crownHalfSpan, 0.0f, 0.0f),
-            style.markerColor);
-        AppendLine(
-            vertices,
-            OffsetPoint(crown, 0.0f, 0.0f, -style.crownHalfSpan),
-            OffsetPoint(crown, 0.0f, 0.0f, style.crownHalfSpan),
-            style.markerColor);
-    }
-
-    range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
-    return range;
-}
-
-DrawRange BuildTangentSegments(
-    const PolylineCurve& curve,
-    const std::vector<DirectX::XMFLOAT3>& tangents,
-    float yOffset,
-    float lineLength,
-    const DirectX::XMFLOAT3& color,
-    std::vector<DebugVertex>& vertices) {
-    DrawRange range = {};
-    range.startVertex = static_cast<UINT>(vertices.size());
-
-    if (curve.controlPoints.size() != tangents.size()) {
-        return range;
-    }
-
-    for (std::size_t i = 0; i < curve.controlPoints.size(); ++i) {
-        const DirectX::XMFLOAT3 start = LiftPoint(curve.controlPoints[i], yOffset);
-        const DirectX::XMFLOAT3 end = {
-            start.x + tangents[i].x * lineLength,
-            start.y + tangents[i].y * lineLength,
-            start.z + tangents[i].z * lineLength,
-        };
-        AppendLine(vertices, start, end, color);
-    }
-
-    range.vertexCount = static_cast<UINT>(vertices.size()) - range.startVertex;
-    return range;
 }
 
 class RoadCurveApp {
@@ -399,19 +221,19 @@ private:
         const float cosYaw = std::cos(camera.yaw);
         const float sinYaw = std::sin(camera.yaw);
 
-        const DirectX::XMFLOAT3 eye = {
+        const Float3 eye = {
             camera.target.x + camera.distance * cosPitch * sinYaw,
             camera.target.y + camera.distance * sinPitch,
             camera.target.z + camera.distance * cosPitch * cosYaw
         };
 
         return DirectX::XMMatrixLookAtLH(
-            DirectX::XMVectorSet(eye.x, eye.y, eye.z, 1.0f),
-            DirectX::XMVectorSet(camera.target.x, camera.target.y, camera.target.z, 1.0f),
+            LoadFloat3(eye, 1.0f),
+            LoadFloat3(camera.target, 1.0f),
             DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
     }
 
-    bool ScreenPointToGroundPlane(int screenX, int screenY, DirectX::XMFLOAT3& groundPoint) const {
+    bool ScreenPointToGroundPlane(int screenX, int screenY, Float3& groundPoint) const {
         const DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
         const OrbitCamera camera = CaptureRenderStateSnapshot().camera;
         const DirectX::XMMATRIX view = CameraViewMatrix(camera);
@@ -440,10 +262,8 @@ private:
             view,
             world);
 
-        DirectX::XMFLOAT3 nearValue = {};
-        DirectX::XMFLOAT3 farValue = {};
-        DirectX::XMStoreFloat3(&nearValue, nearPoint);
-        DirectX::XMStoreFloat3(&farValue, farPoint);
+        const Float3 nearValue = StoreFloat3(nearPoint);
+        const Float3 farValue = StoreFloat3(farPoint);
 
         const float rayY = farValue.y - nearValue.y;
         if (std::fabs(rayY) <= 1.0e-6f) {
@@ -463,37 +283,31 @@ private:
         return std::isfinite(groundPoint.x) && std::isfinite(groundPoint.z);
     }
 
-    void AppendControlPointToCurrentCurve(const DirectX::XMFLOAT3& point) {
+    void AppendControlPointToCurrentCurve(const Float3& point) {
+        bool changed = false;
         {
             std::lock_guard<std::mutex> lock(authoredCurvesMutex_);
-            if (!currentCurveActive_) {
-                authoredCurves_.push_back({});
-                currentCurveActive_ = true;
-            }
-
-            PolylineCurve& currentCurve = authoredCurves_.back();
-            if (!currentCurve.controlPoints.empty() &&
-                DistanceSquared(currentCurve.controlPoints.back(), point) <= 1.0e-6f) {
-                return;
-            }
-
-            currentCurve.controlPoints.push_back(point);
+            changed = document_.AppendControlPoint(point);
         }
-        RequestGeometryRebuild();
+        if (changed) {
+            RequestGeometryRebuild();
+        }
     }
 
     void FinishCurrentCurve() {
-        if (!currentCurveActive_) {
-            return;
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> lock(authoredCurvesMutex_);
+            changed = document_.FinishCurrentCurve();
         }
-
-        currentCurveActive_ = false;
-        RequestGeometryRebuild();
+        if (changed) {
+            RequestGeometryRebuild();
+        }
     }
 
     std::vector<PolylineCurve> CaptureAuthoredCurvesSnapshot() const {
         std::lock_guard<std::mutex> lock(authoredCurvesMutex_);
-        return authoredCurves_;
+        return document_.AuthoredCurves();
     }
 
     RenderStateSnapshot CaptureRenderStateSnapshot() const {
@@ -569,7 +383,7 @@ private:
             DestroyWindow(hwnd);
             return 0;
         case WM_LBUTTONDOWN: {
-            DirectX::XMFLOAT3 groundPoint = {};
+            Float3 groundPoint = {};
             if (ScreenPointToGroundPlane(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), groundPoint)) {
                 AppendControlPointToCurrentCurve(groundPoint);
             }
@@ -1029,100 +843,7 @@ private:
     }
 
     SceneGeometryCpuData BuildSceneGeometryData(const std::vector<PolylineCurve>& authoredCurves) const {
-        constexpr float kRoadCleanupRadius = 0.45f;
-        const DirectX::XMFLOAT3 tangentColor = {1.00f, 0.18f, 0.48f};
-        SceneGeometryCpuData geometry = {};
-
-        std::vector<ProcessedCurveData> processedCurves;
-        processedCurves.reserve(authoredCurves.size());
-        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves.size(); ++curveIndex) {
-            const PolylineCurve& roughCurve = authoredCurves[curveIndex];
-            if (const auto error = ValidatePolylineCurve(roughCurve)) {
-                continue;
-            }
-
-            ProcessedCurveData processedCurve = {};
-            processedCurve.authoredIndex = curveIndex;
-            processedCurve.curve = SubdividePolylineCurveTowardsBezierLimit(roughCurve);
-            if (const auto error = ValidatePolylineCurve(processedCurve.curve)) {
-                continue;
-            }
-
-            if (const auto issue = ComputeCurveTangents(
-                    processedCurve.curve,
-                    kRibbonTangentMode,
-                    processedCurve.tangents)) {
-                continue;
-            }
-
-            processedCurves.push_back(std::move(processedCurve));
-        }
-
-        geometry.gridRange = BuildGroundGrid(geometry.lineVertices);
-        geometry.roughCurveRange.startVertex = static_cast<UINT>(geometry.lineVertices.size());
-        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves.size(); ++curveIndex) {
-            BuildCurveSegments(authoredCurves[curveIndex], RoughCurveStyle(curveIndex), geometry.lineVertices);
-        }
-        geometry.roughCurveRange.vertexCount =
-            static_cast<UINT>(geometry.lineVertices.size()) - geometry.roughCurveRange.startVertex;
-
-        geometry.roughControlPointRange.startVertex = static_cast<UINT>(geometry.lineVertices.size());
-        for (CurveIndex curveIndex = 0; curveIndex < authoredCurves.size(); ++curveIndex) {
-            BuildControlPointMarkers(authoredCurves[curveIndex], RoughCurveStyle(curveIndex), geometry.lineVertices);
-        }
-        geometry.roughControlPointRange.vertexCount =
-            static_cast<UINT>(geometry.lineVertices.size()) - geometry.roughControlPointRange.startVertex;
-
-        geometry.subdividedCurveRange.startVertex = static_cast<UINT>(geometry.lineVertices.size());
-        for (const ProcessedCurveData& processedCurve : processedCurves) {
-            BuildCurveSegments(
-                processedCurve.curve,
-                SubdividedCurveStyle(processedCurve.authoredIndex),
-                geometry.lineVertices);
-        }
-        geometry.subdividedCurveRange.vertexCount =
-            static_cast<UINT>(geometry.lineVertices.size()) - geometry.subdividedCurveRange.startVertex;
-
-        geometry.subdividedTangentRange.startVertex = static_cast<UINT>(geometry.lineVertices.size());
-        for (const ProcessedCurveData& processedCurve : processedCurves) {
-            const CurveDebugStyle style = SubdividedCurveStyle(processedCurve.authoredIndex);
-            BuildTangentSegments(
-                processedCurve.curve,
-                processedCurve.tangents,
-                style.yOffset + kTangentDebugYOffset,
-                kTangentDebugLength,
-                tangentColor,
-                geometry.lineVertices);
-        }
-        geometry.subdividedTangentRange.vertexCount =
-            static_cast<UINT>(geometry.lineVertices.size()) - geometry.subdividedTangentRange.startVertex;
-
-        if (processedCurves.empty()) {
-            return geometry;
-        }
-
-        std::vector<PolylineCurve> roadSpines;
-        roadSpines.reserve(processedCurves.size());
-        for (const ProcessedCurveData& processedCurve : processedCurves) {
-            roadSpines.push_back(processedCurve.curve);
-        }
-
-        GenerateRoadResult generatedRoad = {};
-        const auto issue = GenerateRoad(
-            roadSpines,
-            kRoadCleanupRadius,
-            kRibbonHalfWidth,
-            generatedRoad,
-            kRibbonTangentMode);
-        if (issue.has_value() ||
-            generatedRoad.ribbonMesh.vertices.empty() ||
-            generatedRoad.ribbonMesh.indices.empty()) {
-            return geometry;
-        }
-
-        geometry.ribbonVertices = std::move(generatedRoad.ribbonMesh.vertices);
-        geometry.ribbonIndices = std::move(generatedRoad.ribbonMesh.indices);
-        return geometry;
+        return BuildRoadDemoSceneGeometry(authoredCurves);
     }
 
     void UploadSceneGeometryBuffers(const SceneGeometryCpuData& geometry) {
@@ -1578,7 +1299,7 @@ private:
     bool showRibbon_ = true;
     bool showRibbonWireframe_ = false;
     mutable std::mutex authoredCurvesMutex_;
-    std::vector<PolylineCurve> authoredCurves_;
+    RoadDemoDocument document_;
     std::mutex geometryRequestMutex_;
     std::condition_variable geometryRequestCondition_;
     std::uint64_t geometryRequestVersion_ = 0;
@@ -1588,7 +1309,6 @@ private:
     std::uint64_t uploadedGeometryVersion_ = 0;
     std::thread renderThread_;
     std::thread geometryWorkerThread_;
-    bool currentCurveActive_ = false;
     bool orbitingCamera_ = false;
     int lastMouseX_ = 0;
     int lastMouseY_ = 0;

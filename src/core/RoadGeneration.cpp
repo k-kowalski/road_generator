@@ -23,7 +23,7 @@ struct CurveLocation {
     SegmentIndex segmentIndex = 0;
     float segmentT = 0.0f;
     float s = 0.0f;
-    DirectX::XMFLOAT3 position = {};
+    Float3 position = {};
 };
 
 struct RawIntersectionHit {
@@ -38,11 +38,11 @@ struct JunctionIncident {
 struct JunctionNode {
     JunctionNode() = default;
 
-    JunctionNode(NodeIndex nodeIdValue, const DirectX::XMFLOAT3& positionValue)
+    JunctionNode(NodeIndex nodeIdValue, const Float3& positionValue)
         : nodeId(nodeIdValue), position(positionValue) {}
 
     NodeIndex nodeId = 0;
-    DirectX::XMFLOAT3 position = {};
+    Float3 position = {};
     std::vector<JunctionIncident> incidents;
 };
 
@@ -79,14 +79,14 @@ struct BoundaryRef {
     float angle = 0.0f;
 };
 
-float DistanceSquared(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT3& right) {
+float DistanceSquared(const Float3& left, const Float3& right) {
     const float dx = left.x - right.x;
     const float dy = left.y - right.y;
     const float dz = left.z - right.z;
     return dx * dx + dy * dy + dz * dz;
 }
 
-float DistanceSquaredXZ(const DirectX::XMFLOAT3& left, const DirectX::XMFLOAT3& right) {
+float DistanceSquaredXZ(const Float3& left, const Float3& right) {
     const float dx = left.x - right.x;
     const float dz = left.z - right.z;
     return dx * dx + dz * dz;
@@ -96,7 +96,7 @@ float Lerp(float start, float end, float t) {
     return start + (end - start) * t;
 }
 
-DirectX::XMFLOAT3 LerpPoint(const DirectX::XMFLOAT3& start, const DirectX::XMFLOAT3& end, float t) {
+Float3 LerpPoint(const Float3& start, const Float3& end, float t) {
     return {
         Lerp(start.x, end.x, t),
         Lerp(start.y, end.y, t),
@@ -126,7 +126,7 @@ CurveLocation MakeCurveLocation(
     CurveIndex curveIndex,
     SegmentIndex segmentIndex,
     float segmentT,
-    const DirectX::XMFLOAT3& position,
+    const Float3& position,
     const CurveMetrics& metrics) {
     CurveLocation location = {};
     location.curveIndex = curveIndex;
@@ -168,7 +168,7 @@ bool SameCurveLocation(const CurveLocation& left, const CurveLocation& right) {
            std::fabs(left.s - right.s) <= kCurveLocationTolerance;
 }
 
-void AppendDistinctPoint(std::vector<DirectX::XMFLOAT3>& points, const DirectX::XMFLOAT3& point) {
+void AppendDistinctPoint(std::vector<Float3>& points, const Float3& point) {
     if (!points.empty() && DistanceSquared(points.back(), point) <= kBoundaryPointMergeDistanceSquared) {
         return;
     }
@@ -176,25 +176,25 @@ void AppendDistinctPoint(std::vector<DirectX::XMFLOAT3>& points, const DirectX::
     points.push_back(point);
 }
 
-float BoundaryAngle(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& point) {
+float BoundaryAngle(const Float3& center, const Float3& point) {
     return std::atan2(point.z - center.z, point.x - center.x);
 }
 
-DirectX::XMFLOAT2 LerpUv(const DirectX::XMFLOAT2& start, const DirectX::XMFLOAT2& end, float t) {
+Float2 LerpUv(const Float2& start, const Float2& end, float t) {
     return {
         Lerp(start.x, end.x, t),
         Lerp(start.y, end.y, t),
     };
 }
 
-DirectX::XMFLOAT2 AverageUv(const DirectX::XMFLOAT2& left, const DirectX::XMFLOAT2& right) {
+Float2 AverageUv(const Float2& left, const Float2& right) {
     return LerpUv(left, right, 0.5f);
 }
 
-DirectX::XMFLOAT3 SmoothTowardIntersection(
-    const DirectX::XMFLOAT3& left,
-    const DirectX::XMFLOAT3& center,
-    const DirectX::XMFLOAT3& right,
+Float3 SmoothTowardIntersection(
+    const Float3& left,
+    const Float3& center,
+    const Float3& right,
     float centerInfluence) {
     const float sideInfluence = 0.5f * (1.0f - centerInfluence);
     return {
@@ -215,7 +215,7 @@ void AppendRibbonMesh(const RibbonMeshData& source, RibbonMeshData& destination)
 }
 
 void CollectSpanBoundary(
-    const DirectX::XMFLOAT3& nodePosition,
+    const Float3& nodePosition,
     BoundaryGroupIndex boundaryGroupIndex,
     bool seamAtStart,
     const RibbonMeshData& spanRibbonMesh,
@@ -237,7 +237,7 @@ void CollectSpanBoundary(
 }
 
 void AppendCenterPatch(
-    const DirectX::XMFLOAT3& intersectionPoint,
+    const Float3& intersectionPoint,
     const std::vector<BoundaryRef>& boundaryRefs,
     RibbonMeshData& ribbonMesh) {
     std::vector<BoundaryRef> sortedBoundaryRefs = boundaryRefs;
@@ -250,7 +250,7 @@ void AppendCenterPatch(
 
     std::vector<std::uint32_t> patchRingIndices;
     patchRingIndices.reserve(sortedBoundaryRefs.size() * 2);
-    DirectX::XMFLOAT2 accumulatedPatchUv = {0.0f, 0.0f};
+    Float2 accumulatedPatchUv = {0.0f, 0.0f};
     std::size_t accumulatedPatchUvCount = 0;
 
     for (BoundaryGroupIndex i = 0; i < sortedBoundaryRefs.size(); ++i) {
@@ -408,7 +408,7 @@ std::vector<JunctionNode> ClusterIntersectionNodes(const std::vector<RawIntersec
     const float mergeDistanceSquared = kCurveLocationTolerance * kCurveLocationTolerance;
 
     for (const RawIntersectionHit& hit : rawHits) {
-        const DirectX::XMFLOAT3& hitPosition = hit.first.position;
+        const Float3& hitPosition = hit.first.position;
 
         JunctionNode* node = nullptr;
         for (JunctionNode& candidate : nodes) {
@@ -434,15 +434,15 @@ std::vector<CurveLocation> IntersectCurveCircle(
     const PolylineCurve& curve,
     CurveIndex curveIndex,
     const CurveMetrics& metrics,
-    const DirectX::XMFLOAT3& center,
+    const Float3& center,
     float radius) {
     std::vector<CurveLocation> hits;
     const Vector2f centerGround = ProjectPointXZ(center);
     const float radiusSquared = radius * radius;
 
     for (SegmentIndex segmentIndex = 0; segmentIndex + 1 < curve.controlPoints.size(); ++segmentIndex) {
-        const DirectX::XMFLOAT3& start = curve.controlPoints[segmentIndex];
-        const DirectX::XMFLOAT3& end = curve.controlPoints[segmentIndex + 1];
+        const Float3& start = curve.controlPoints[segmentIndex];
+        const Float3& end = curve.controlPoints[segmentIndex + 1];
         const Vector2f startGround = ProjectPointXZ(start);
         const Vector2f endGround = ProjectPointXZ(end);
 
@@ -479,7 +479,7 @@ std::vector<CurveLocation> IntersectCurveCircle(
             }
 
             const float clampedT = std::clamp(segmentT, 0.0f, 1.0f);
-            const DirectX::XMFLOAT3 position = LerpPoint(start, end, clampedT);
+            const Float3 position = LerpPoint(start, end, clampedT);
             hits.push_back(MakeCurveLocation(curveIndex, segmentIndex, clampedT, position, metrics));
         }
     }

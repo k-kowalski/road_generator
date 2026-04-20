@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Road Generator</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./site.css" />
+</head>
+
+<body>
+  <div class="app-shell">
+    <canvas id="scene"></canvas>
+    <div class="hud-stack">
+      <a class="site-pill" href="https://k-kowalski.github.io/" target="_blank" rel="noreferrer">
+        k-kowalski.github.io
+      </a>
+      <section class="hud">
+        <h1>Road Generator</h1>
+        <p>
+          Left click authors curve points on the ground plane. Press <code>Enter</code> to finish the
+          current curve.
+        </p>
+        <p>
+          Right drag orbits, mouse wheel zooms, <code>WASD</code> pans, <code>Home</code> resets the
+          camera, and <code>1</code>-<code>4</code> match the native visibility toggles.
+        </p>
+        <p id="status">Loading WebGPU and wasm core...</p>
+      </section>
+      <section class="hud">
+        <h1>About This Project</h1>
+        <p>
+          Road Generator is a procedural sandbox built around a shared C++ core for
+          polyline authoring, subdivision, cleanup, and ribbon mesh generation.
+        </p>
+        <p>
+          The same core solvers and algorithms feed both the native DirectX 12 app and
+          this WebAssembly + WebGPU demo.
+        </p>
+        <p>
+          Geometry programming in C++/GPU allows for
+          high performance, low-level control over the generation process and portability across platforms.
+        </p>
+      </section>
+    </div>
+  </div>
+  <script src="./road_demo_core.js"></script>
+  <script src="./math.js"></script>
+  <script src="./shaders.js"></script>
+  <script src="./main.js"></script>
+</body>
+
+</html>
