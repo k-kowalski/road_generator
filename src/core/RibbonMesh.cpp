@@ -1,5 +1,6 @@
 #include "RibbonMesh.h"
 
+#include <array>
 #include <cmath>
 
 namespace {
@@ -7,6 +8,7 @@ namespace {
 constexpr float kMinimumVectorLengthSquared = 1.0e-8f;
 constexpr float kMinimumMiterDenominator = 1.0e-4f;
 constexpr float kMaximumMiterScale = 4.0f;
+constexpr std::size_t kStackRibbonSampleCapacity = 64;
 constexpr Float3 kUp = {0.0f, 1.0f, 0.0f};
 
 Float3 Subtract(const Float3& left, const Float3& right) {
@@ -128,6 +130,29 @@ std::optional<RibbonMeshBuildIssue> ComputeSegmentSides(
     return std::nullopt;
 }
 
+std::optional<RibbonMeshBuildIssue> FillSegmentSides(
+    const PolylineCurve& curve,
+    Float3* segmentSides,
+    std::size_t segmentCount) {
+    for (SampleIndex i = 0; i < segmentCount; ++i) {
+        Float3 direction = {};
+        if (!NormalizeVector(
+                Subtract(curve.controlPoints[i + 1], curve.controlPoints[i]),
+                direction)) {
+            return RibbonMeshBuildIssue{RibbonMeshBuildError::DegenerateTangent, i};
+        }
+
+        Float3 side = {};
+        if (!NormalizeVector(Cross(kUp, direction), side)) {
+            return RibbonMeshBuildIssue{RibbonMeshBuildError::DegenerateTangent, i};
+        }
+
+        segmentSides[i] = side;
+    }
+
+    return std::nullopt;
+}
+
 bool ComputeCurveTangent(
     const std::vector<Float3>& controlPoints,
     SampleIndex sampleIndex,
@@ -141,6 +166,23 @@ bool ComputeCurveTangent(
     default:
         return false;
     }
+}
+
+std::optional<RibbonMeshBuildIssue> FillCurveTangents(
+    const PolylineCurve& curve,
+    RibbonTangentMode tangentMode,
+    Float3* tangents,
+    std::size_t sampleCount) {
+    for (std::size_t i = 0; i < sampleCount; ++i) {
+        Float3 tangent = {};
+        if (!ComputeCurveTangent(curve.controlPoints, i, tangentMode, tangent)) {
+            return RibbonMeshBuildIssue{RibbonMeshBuildError::DegenerateTangent, i};
+        }
+
+        tangents[i] = tangent;
+    }
+
+    return std::nullopt;
 }
 
 float SegmentLength(const Float3& start, const Float3& end) {
@@ -216,13 +258,28 @@ std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
         return RibbonMeshBuildIssue{RibbonMeshBuildError::NonPositiveHalfWidth, 0};
     }
 
-    std::vector<Float3> segmentSides;
-    if (const auto issue = ComputeSegmentSides(curve, segmentSides)) {
+    const std::size_t segmentCount = sampleCount - 1;
+    std::array<Float3, kStackRibbonSampleCapacity> stackSegmentSides = {};
+    std::vector<Float3> heapSegmentSides;
+    Float3* segmentSides = stackSegmentSides.data();
+    if (segmentCount > stackSegmentSides.size()) {
+        heapSegmentSides.resize(segmentCount);
+        segmentSides = heapSegmentSides.data();
+    }
+
+    if (const auto issue = FillSegmentSides(curve, segmentSides, segmentCount)) {
         return issue;
     }
 
-    std::vector<Float3> tangents;
-    if (const auto issue = ComputeCurveTangents(curve, tangentMode, tangents)) {
+    std::array<Float3, kStackRibbonSampleCapacity> stackTangents = {};
+    std::vector<Float3> heapTangents;
+    Float3* tangents = stackTangents.data();
+    if (sampleCount > stackTangents.size()) {
+        heapTangents.resize(sampleCount);
+        tangents = heapTangents.data();
+    }
+
+    if (const auto issue = FillCurveTangents(curve, tangentMode, tangents, sampleCount)) {
         return issue;
     }
 
@@ -234,9 +291,9 @@ std::optional<RibbonMeshBuildIssue> BuildFlatRibbonMesh(
     for (std::size_t i = 0; i < sampleCount; ++i) {
         Float3 offset = {};
         if (i == 0) {
-            offset = Scale(segmentSides.front(), halfWidth);
+            offset = Scale(segmentSides[0], halfWidth);
         } else if (i + 1 == sampleCount) {
-            offset = Scale(segmentSides.back(), halfWidth);
+            offset = Scale(segmentSides[segmentCount - 1], halfWidth);
         } else if (!TryComputeMiterOffset(segmentSides[i - 1], segmentSides[i], halfWidth, offset)) {
             Float3 fallbackSide = {};
             if (!NormalizeVector(Cross(kUp, tangents[i]), fallbackSide)) {

@@ -1,6 +1,7 @@
 #include "RoadGeneration.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -11,6 +12,8 @@ constexpr float kCenterPatchIntersectionInfluence = 0.25f;
 constexpr float kIntersectionTolerance = 1.0e-6f;
 constexpr float kCurveLocationTolerance = 1.0e-4f;
 constexpr float kBoundaryPointMergeDistanceSquared = 1.0e-6f;
+constexpr std::size_t kStackPatchBoundaryCapacity = 16;
+constexpr std::size_t kStackPatchRingCapacity = kStackPatchBoundaryCapacity * 2;
 
 struct CurveMetrics {
     std::vector<float> prefixLengths;
@@ -240,27 +243,54 @@ void AppendCenterPatch(
     const Float3& intersectionPoint,
     const std::vector<BoundaryRef>& boundaryRefs,
     RibbonMeshData& ribbonMesh) {
-    std::vector<BoundaryRef> sortedBoundaryRefs = boundaryRefs;
+    std::array<BoundaryRef, kStackPatchBoundaryCapacity> stackSortedBoundaryRefs = {};
+    std::vector<BoundaryRef> heapSortedBoundaryRefs;
+    BoundaryRef* sortedBoundaryRefs = stackSortedBoundaryRefs.data();
+    const std::size_t sortedBoundaryRefCount = boundaryRefs.size();
+    if (sortedBoundaryRefCount > stackSortedBoundaryRefs.size()) {
+        heapSortedBoundaryRefs = boundaryRefs;
+        sortedBoundaryRefs = heapSortedBoundaryRefs.data();
+    } else {
+        std::copy(boundaryRefs.begin(), boundaryRefs.end(), sortedBoundaryRefs);
+    }
+
     std::sort(
-        sortedBoundaryRefs.begin(),
-        sortedBoundaryRefs.end(),
+        sortedBoundaryRefs,
+        sortedBoundaryRefs + sortedBoundaryRefCount,
         [](const BoundaryRef& left, const BoundaryRef& right) {
             return left.angle < right.angle;
         });
 
-    std::vector<std::uint32_t> patchRingIndices;
-    patchRingIndices.reserve(sortedBoundaryRefs.size() * 2);
+    std::array<std::uint32_t, kStackPatchRingCapacity> stackPatchRingIndices = {};
+    std::vector<std::uint32_t> heapPatchRingIndices;
+    std::uint32_t* patchRingIndices = stackPatchRingIndices.data();
+    std::size_t patchRingIndexCount = 0;
+    if (sortedBoundaryRefCount * 2 > stackPatchRingIndices.size()) {
+        heapPatchRingIndices.reserve(sortedBoundaryRefCount * 2);
+    }
+
+    const auto appendPatchRingIndex = [&](std::uint32_t index) {
+        if (sortedBoundaryRefCount * 2 > stackPatchRingIndices.size()) {
+            heapPatchRingIndices.push_back(index);
+            patchRingIndices = heapPatchRingIndices.data();
+            patchRingIndexCount = heapPatchRingIndices.size();
+            return;
+        }
+
+        patchRingIndices[patchRingIndexCount++] = index;
+    };
+
     Float2 accumulatedPatchUv = {0.0f, 0.0f};
     std::size_t accumulatedPatchUvCount = 0;
 
-    for (BoundaryGroupIndex i = 0; i < sortedBoundaryRefs.size(); ++i) {
+    for (BoundaryGroupIndex i = 0; i < sortedBoundaryRefCount; ++i) {
         const BoundaryRef& current = sortedBoundaryRefs[i];
-        const BoundaryRef& next = sortedBoundaryRefs[(i + 1) % sortedBoundaryRefs.size()];
+        const BoundaryRef& next = sortedBoundaryRefs[(i + 1) % sortedBoundaryRefCount];
         const std::uint32_t duplicatedBoundaryVertexIndex = static_cast<std::uint32_t>(ribbonMesh.vertices.size());
         RibbonVertex duplicatedBoundaryVertex = current.vertex;
         duplicatedBoundaryVertex.surfaceKind = kRibbonSurfaceIntersection;
         ribbonMesh.vertices.push_back(duplicatedBoundaryVertex);
-        patchRingIndices.push_back(duplicatedBoundaryVertexIndex);
+        appendPatchRingIndex(duplicatedBoundaryVertexIndex);
         accumulatedPatchUv.x += duplicatedBoundaryVertex.uv.x;
         accumulatedPatchUv.y += duplicatedBoundaryVertex.uv.y;
         ++accumulatedPatchUvCount;
@@ -281,7 +311,7 @@ void AppendCenterPatch(
 
         const std::uint32_t insertedVertexIndex = static_cast<std::uint32_t>(ribbonMesh.vertices.size());
         ribbonMesh.vertices.push_back(insertedVertex);
-        patchRingIndices.push_back(insertedVertexIndex);
+        appendPatchRingIndex(insertedVertexIndex);
         accumulatedPatchUv.x += insertedVertex.uv.x;
         accumulatedPatchUv.y += insertedVertex.uv.y;
         ++accumulatedPatchUvCount;
@@ -306,10 +336,10 @@ void AppendCenterPatch(
     centerVertex.color = kRibbonWireframeColor;
     ribbonMesh.vertices.push_back(centerVertex);
 
-    ribbonMesh.indices.reserve(ribbonMesh.indices.size() + patchRingIndices.size() * 3);
-    for (BoundaryGroupIndex i = 0; i < patchRingIndices.size(); ++i) {
+    ribbonMesh.indices.reserve(ribbonMesh.indices.size() + patchRingIndexCount * 3);
+    for (BoundaryGroupIndex i = 0; i < patchRingIndexCount; ++i) {
         const std::uint32_t current = patchRingIndices[i];
-        const std::uint32_t next = patchRingIndices[(i + 1) % patchRingIndices.size()];
+        const std::uint32_t next = patchRingIndices[(i + 1) % patchRingIndexCount];
         ribbonMesh.indices.push_back(centerVertexIndex);
         ribbonMesh.indices.push_back(current);
         ribbonMesh.indices.push_back(next);
